@@ -12,8 +12,9 @@ export const UserDetail: React.FC = () => {
   const { users, settings, updateUser } = useApp();
   const user = users.find(u => u.id === id);
   const [liveData, setLiveData] = useState<any[]>([]);
-  const [activeTab, setActiveTab] = useState<'overview' | 'settings'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'settings' | 'logs'>('overview');
   const [usageHistory, setUsageHistory] = useState<any[]>([]);
+  const [connectionLogs, setConnectionLogs] = useState<any[]>([]);
 
   // Local state for editing
   const [editForm, setEditForm] = useState<Partial<User>>({});
@@ -44,7 +45,6 @@ export const UserDetail: React.FC = () => {
       for (let i = 6; i >= 0; i--) {
         const d = new Date(today);
         d.setDate(d.getDate() - i);
-        // Random usage logic for demo purposes
         const dailyVal = Math.max(0.1, (Math.random() * (user.dataLimitGB > 0 ? user.dataLimitGB / 10 : 2))).toFixed(2);
         history.push({
           date: d.toLocaleDateString('en-US', { weekday: 'short' }),
@@ -54,6 +54,16 @@ export const UserDetail: React.FC = () => {
       setUsageHistory(history);
     }
   }, [user]);
+
+  // Fetch Logs when tab is active
+  useEffect(() => {
+    if (activeTab === 'logs' && user) {
+        fetch(`/api/users/${user.username}/logs`)
+            .then(res => res.json())
+            .then(data => setConnectionLogs(data))
+            .catch(err => console.error("Failed to fetch logs", err));
+    }
+  }, [activeTab, user]);
 
   // Simulate Live Graph
   useEffect(() => {
@@ -73,7 +83,6 @@ export const UserDetail: React.FC = () => {
 
   if (!user) return <div>User not found</div>;
 
-  // Added remark to the link
   const remark = settings.connectionRemark ? `#${encodeURIComponent(settings.connectionRemark)}` : '#SSH-Panel';
   const sshLink = `ssh://${user.username}:${user.password}@${settings.serverIp}:22${remark}`;
 
@@ -91,7 +100,6 @@ export const UserDetail: React.FC = () => {
           if (useTotalSpeed) {
               updatedUser.speedLimitUpload = 0;
               updatedUser.speedLimitDownload = 0;
-              // updatedUser.speedLimitTotal is set by input
           } else {
               updatedUser.speedLimitTotal = 0;
           }
@@ -111,6 +119,20 @@ export const UserDetail: React.FC = () => {
     navigator.clipboard.writeText(sshLink);
     alert('Link copied to clipboard');
   };
+  
+  const getFlagEmoji = (countryCode: string) => {
+    if (!countryCode) return '🏳️';
+    const codePoints = countryCode.toUpperCase().split('').map(char => 127397 + char.charCodeAt(0));
+    return String.fromCodePoint(...codePoints);
+  }
+
+  const formatBytes = (bytes: number) => {
+    if (!bytes) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  }
 
   const UnlimitedCheckbox = ({ label, checked, onChange }: { label: string, checked: boolean, onChange: (v: boolean) => void }) => (
      <label className="flex items-center gap-2 cursor-pointer select-none">
@@ -149,6 +171,7 @@ export const UserDetail: React.FC = () => {
           <div className="flex gap-2">
             <button onClick={() => setActiveTab('overview')} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'overview' ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-300'}`}>Overview</button>
             <button onClick={() => setActiveTab('settings')} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'settings' ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-300'}`}>Edit</button>
+            <button onClick={() => setActiveTab('logs')} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'logs' ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-300'}`}>Connection Logs</button>
           </div>
         </div>
 
@@ -372,6 +395,62 @@ export const UserDetail: React.FC = () => {
               <button onClick={handleSave} className="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-3 rounded-xl font-bold shadow-lg shadow-indigo-500/20">
                  Save Changes
               </button>
+           </div>
+        )}
+
+        {activeTab === 'logs' && (
+           <div className="animate-fadeIn">
+             <div className="flex items-center justify-between mb-4">
+               <h3 className="font-bold text-white flex items-center gap-2"><Globe className="w-4 h-4" /> Connection Logs</h3>
+               <span className="text-xs text-slate-500">Live History</span>
+             </div>
+             <div className="bg-slate-950 rounded-xl border border-slate-800 overflow-hidden">
+                {connectionLogs.length === 0 ? (
+                    <div className="p-8 text-center text-slate-500">No logs found yet. Connect via SSH to generate logs.</div>
+                ) : (
+                    <table className="w-full text-left text-sm">
+                       <thead className="bg-slate-900 text-slate-400">
+                          <tr>
+                             <th className="p-3">Time</th>
+                             <th className="p-3">IP / Location</th>
+                             <th className="p-3">Duration</th>
+                             <th className="p-3 text-right">Data</th>
+                          </tr>
+                       </thead>
+                       <tbody className="divide-y divide-slate-800 text-slate-300">
+                          {connectionLogs.map((log, i) => {
+                             const start = new Date(log.connected_at);
+                             const end = log.disconnected_at ? new Date(log.disconnected_at) : null;
+                             const duration = end ? Math.round((end.getTime() - start.getTime()) / 1000 / 60) : 'Active';
+                             
+                             return (
+                                 <tr key={i} className="hover:bg-slate-900/50">
+                                    <td className="p-3">
+                                        <div className="font-mono text-xs">{start.toLocaleDateString()}</div>
+                                        <div className="text-slate-500 text-xs">{start.toLocaleTimeString()}</div>
+                                    </td>
+                                    <td className="p-3">
+                                        <div className="flex items-center gap-2">
+                                            <span className="font-mono text-cyan-500">{log.ip}</span>
+                                        </div>
+                                        <div className="text-xs text-slate-500">
+                                            {getFlagEmoji(log.country)} {log.city || log.country}
+                                        </div>
+                                    </td>
+                                    <td className="p-3 text-slate-400">
+                                        {duration === 'Active' ? <span className="text-green-400 animate-pulse">● Active</span> : `${duration} min`}
+                                    </td>
+                                    <td className="p-3 text-right text-xs">
+                                        <div className="text-indigo-400">↑ {formatBytes(log.bytes_received)}</div>
+                                        <div className="text-cyan-400">↓ {formatBytes(log.bytes_sent)}</div>
+                                    </td>
+                                 </tr>
+                             );
+                          })}
+                       </tbody>
+                    </table>
+                )}
+             </div>
            </div>
         )}
       </div>

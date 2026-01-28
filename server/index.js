@@ -37,7 +37,9 @@ const runSystemCommand = (command) => {
 // --- GeoIP Service ---
 const geoCache = new Map();
 const resolveGeo = async (ip) => {
-    const cleanIp = ip.replace('::ffff:', '');
+    // Remove brackets from IPv6 or mapped addresses (e.g. [::ffff:1.2.3.4] -> ::ffff:1.2.3.4)
+    let cleanIp = ip.replace(/^\[+|\]+$/g, '');
+    cleanIp = cleanIp.replace('::ffff:', '');
     
     // Private IPs
     if (cleanIp === '127.0.0.1' || cleanIp.startsWith('192.168.') || cleanIp.startsWith('10.') || cleanIp === '::1') {
@@ -49,10 +51,10 @@ const resolveGeo = async (ip) => {
     }
 
     try {
-        // Using ip-api.com
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1500); // 1.5s timeout
+        const timeoutId = setTimeout(() => controller.abort(), 2000); 
 
+        // Use http explicitly as ip-api free tier is http-only often
         const res = await fetch(`http://ip-api.com/json/${cleanIp}?fields=status,country,countryCode,city`, {
             signal: controller.signal
         });
@@ -71,18 +73,19 @@ const resolveGeo = async (ip) => {
             }
         }
     } catch (e) {
-        // console.error("GeoIP Fetch Error:", e.message);
+        // console.error(`GeoIP Error for ${cleanIp}:`, e.message);
     }
     
-    // Cache failures briefly to prevent spam
+    // Cache failures briefly
     const unknown = { country: 'Unknown', countryCode: '', city: '-' };
     geoCache.set(cleanIp, unknown);
-    setTimeout(() => geoCache.delete(cleanIp), 60000); // Retry after 1 min
+    setTimeout(() => geoCache.delete(cleanIp), 60000); 
     return unknown;
 };
 
 // --- Monitoring Service ---
-const connectionCache = new Map(); 
+const connectionCache = new Map(); // pid -> { bytes_sent, bytes_received, last_update, username }
+const activeSessionLogs = new Map(); // pid -> { logId, startBytesSent, startBytesRecv }
 let liveUserStats = {}; // Global state for API access
 
 const monitorTraffic = async () => {
@@ -94,7 +97,7 @@ const monitorTraffic = async () => {
     if (!success) return;
 
     const lines = stdout.split('\n');
-    const activePids = new Set();
+    const currentBatchPids = new Set(); // PIDs found in this iteration
     const userUpdates = {}; // Map<username, { ... }>
 
     let currentPid = null;
@@ -114,12 +117,13 @@ const monitorTraffic = async () => {
             currentBytesRecv = 0;
 
             const pidMatch = line.match(/users:\(\(".*?",pid=(\d+)/); 
+            // Regex handles optional brackets for IPv6 and port
             const ipMatch = line.match(/([0-9a-fA-F.:\[\]]+):[\w]+\s+([0-9a-fA-F.:\[\]]+)/);
             
             if (pidMatch && ipMatch) {
                 currentPid = pidMatch[1];
-                currentIp = ipMatch[2]; // Remote IP
-                activePids.add(currentPid);
+                currentIp = ipMatch[2]; 
+                currentBatchPids.add(currentPid);
             }
         }
         
@@ -140,7 +144,7 @@ const monitorTraffic = async () => {
                 username = userOut.trim();
             }
 
-            if (username && username !== 'root' && username !== 'sshd') {
+            if (username && username !== 'root' && username !== 'sshd' && username !== '') {
                 if (!userUpdates[username]) {
                     userUpdates[username] = { 
                         upDelta: 0, 
@@ -154,29 +158,54 @@ const monitorTraffic = async () => {
                     };
                 }
 
-                // Resolve Geo Info (Async but cached)
                 const geo = await resolveGeo(currentIp);
 
-                // Update aggregate IP info (use the first connection's IP)
                 if (!userUpdates[username].lastIp) {
-                    userUpdates[username].lastIp = currentIp;
+                    userUpdates[username].lastIp = currentIp.replace(/^\[+|\]+$/g, '');
                     userUpdates[username].lastCity = geo.city;
                     userUpdates[username].lastCountry = geo.countryCode;
                 }
 
+                // --- Connection Logging Logic ---
+                if (!activeSessionLogs.has(currentPid)) {
+                    // New Session Detected
+                    const cleanIp = currentIp.replace(/^\[+|\]+$/g, '');
+                    const now = new Date().toISOString();
+                    
+                    // Use a Promise wrapper for db.run to get lastID
+                    await new Promise((resolve) => {
+                        db.run(`INSERT INTO connection_logs (username, ip, country, city, device, connected_at, bytes_sent, bytes_received) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, 
+                        [username, cleanIp, geo.countryCode, geo.city, 'SSH Tunnel', now, 0, 0], 
+                        function(err) {
+                            if (!err) {
+                                activeSessionLogs.set(currentPid, { 
+                                    logId: this.lastID, 
+                                    startBytesSent: currentBytesSent, 
+                                    startBytesRecv: currentBytesRecv 
+                                });
+                            }
+                            resolve();
+                        });
+                    });
+                } else {
+                    // Update running total for session (optional, usually we update on close)
+                    // But we can update bytes_sent/recv in cache
+                }
+                // -------------------------------
+
                 userUpdates[username].activeConns.push({
                     id: currentPid,
-                    ip: currentIp,
+                    ip: currentIp.replace(/^\[+|\]+$/g, ''),
                     device: 'SSH Tunnel', 
                     country: geo.countryCode,
                     city: geo.city,
-                    connectedAt: new Date().toISOString(),
+                    connectedAt: new Date().toISOString(), // This is technically inaccurate as it resets on restart, but fine for live view
                     currentDownloadSpeed: 0,
                     currentUploadSpeed: 0,
                     sessionUsageMB: (currentBytesSent + currentBytesRecv) / 1024 / 1024
                 });
 
-                // Calculate Deltas
+                // Calculate Deltas for Speed
                 let prev = connectionCache.get(currentPid);
                 if (!prev) {
                     prev = { bytes_sent: currentBytesSent, bytes_received: currentBytesRecv, last_update: Date.now(), username };
@@ -185,7 +214,6 @@ const monitorTraffic = async () => {
                 const deltaSent = Math.max(0, currentBytesSent - prev.bytes_sent);
                 const deltaRecv = Math.max(0, currentBytesRecv - prev.bytes_received);
                 
-                // Speed Calculation
                 const now = Date.now();
                 const timeDiff = (now - prev.last_update) / 1000; 
                 if (timeDiff > 0) {
@@ -213,18 +241,33 @@ const monitorTraffic = async () => {
         }
     }
 
-    // Clean old cache
-    for (const pid of connectionCache.keys()) {
-        if (!activePids.has(pid)) {
+    // --- Clean up Closed Sessions ---
+    for (const [pid, sessionInfo] of activeSessionLogs) {
+        if (!currentBatchPids.has(pid)) {
+            // PID is gone, session ended
+            const finalCache = connectionCache.get(pid);
+            const totalSent = finalCache ? Math.max(0, finalCache.bytes_sent - sessionInfo.startBytesSent) : 0;
+            const totalRecv = finalCache ? Math.max(0, finalCache.bytes_received - sessionInfo.startBytesRecv) : 0;
+            const disconnectedAt = new Date().toISOString();
+
+            db.run(`UPDATE connection_logs SET disconnected_at = ?, bytes_sent = ?, bytes_received = ? WHERE id = ?`, 
+                [disconnectedAt, totalSent, totalRecv, sessionInfo.logId]);
+            
+            activeSessionLogs.delete(pid);
             connectionCache.delete(pid);
         }
     }
 
-    // Update global state
+    // Clean old cache if not tracked in logs (fail-safe)
+    for (const pid of connectionCache.keys()) {
+        if (!currentBatchPids.has(pid) && !activeSessionLogs.has(pid)) {
+            connectionCache.delete(pid);
+        }
+    }
+
     liveUserStats = userUpdates;
 
-    // 3. Update Database (With explicit IP/Location persistence)
-    // We update lastIp/City/Country only if the user is currently connected (update exists)
+    // 3. Update Database 
     const stmt = db.prepare(`
         UPDATE users SET 
         dataUsedGB = dataUsedGB + ?, 
@@ -242,7 +285,6 @@ const monitorTraffic = async () => {
         
         db.all("SELECT username, dataLimitGB, expiryDate, isActive, id FROM users", (err, rows) => {
             if(err) {
-                console.error("DB Select Error:", err.message);
                 try { stmt.finalize(); } catch(e) {}
                 db.run("ROLLBACK");
                 return;
@@ -267,26 +309,18 @@ const monitorTraffic = async () => {
                     lastIp = update.lastIp || null;
                     lastCountry = update.lastCountry || null;
                     lastCity = update.lastCity || null;
-
-                    // --- SPEED MONITORING ONLY (No Kill) ---
-                    // We removed the kill logic to prevent session drops.
-                    // Future implementation: Use `tc` for traffic shaping instead of killing.
-                    // ---------------------------------------
                 }
 
-                // Run update
                 stmt.run(addGB, activeCount, upSpeed, downSpeed, lastIp, lastCountry, lastCity, user.username);
 
-                // Data & Expiry Enforcement
+                // Enforcement logic
                 if (update) { 
                     const totalUsed = user.dataUsedGB + addGB; 
                     let shouldLock = false;
-
                     if (user.dataLimitGB > 0 && totalUsed >= user.dataLimitGB) shouldLock = true;
                     if (user.expiryDate && new Date() > new Date(user.expiryDate)) shouldLock = true;
 
                     if (shouldLock && user.isActive) {
-                        console.log(`Locking user: ${user.username} (Quota/Expiry)`);
                         await runSystemCommand(`usermod -L "${user.username}"`);
                         await runSystemCommand(`pkill -u "${user.username}"`);
                         db.run("UPDATE users SET isActive = 0 WHERE id = ?", [user.id]);
@@ -304,7 +338,6 @@ setInterval(monitorTraffic, 2000);
 
 // --- API Routes ---
 
-// 1. Settings
 app.get('/api/settings', (req, res) => {
     db.all("SELECT * FROM settings", (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -318,7 +351,6 @@ app.get('/api/settings', (req, res) => {
 app.post('/api/settings', (req, res) => {
     const settings = req.body;
     const stmt = db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)");
-    
     db.serialize(() => {
         db.run("BEGIN TRANSACTION");
         Object.entries(settings).forEach(([key, value]) => {
@@ -332,22 +364,12 @@ app.post('/api/settings', (req, res) => {
     stmt.finalize();
 });
 
-// 2. Users
 app.get('/api/users', (req, res) => {
     db.all("SELECT * FROM users", (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
-        
         const users = rows.map(u => {
             const stats = liveUserStats[u.username];
-            
-            // Merge Live Stats with DB Persisted stats
-            // If user is offline (no live stats), fall back to DB 'last' values
-            let activeConns = stats ? stats.activeConns : [];
-
-            // If no active connections, we might want to show the last known location in the UI
-            // But activeConnections implies *currently* active.
-            // We will pass lastIp/City separately in the User object.
-
+            const activeConns = stats ? stats.activeConns : [];
             return {
                 ...u,
                 isActive: !!u.isActive,
@@ -357,6 +379,15 @@ app.get('/api/users', (req, res) => {
             };
         });
         res.json(users);
+    });
+});
+
+// New: Get Connection Logs
+app.get('/api/users/:username/logs', (req, res) => {
+    const { username } = req.params;
+    db.all("SELECT * FROM connection_logs WHERE username = ? ORDER BY id DESC LIMIT 50", [username], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(rows);
     });
 });
 
@@ -374,15 +405,10 @@ app.post('/api/users', async (req, res) => {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
-    stmt.run(
-        u.id, u.username, u.password, u.isActive ? 1 : 0, u.expiryDate, 
-        u.dataLimitGB, 0, u.concurrentLimit, 0, u.createdAt, u.notes,
-        u.speedLimitUpload || 0, u.speedLimitDownload || 0, u.speedLimitTotal || 0,
-        function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ success: true, id: u.id });
-        }
-    );
+    stmt.run(u.id, u.username, u.password, u.isActive ? 1 : 0, u.expiryDate, u.dataLimitGB, 0, u.concurrentLimit, 0, u.createdAt, u.notes, u.speedLimitUpload || 0, u.speedLimitDownload || 0, u.speedLimitTotal || 0, function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ success: true, id: u.id });
+    });
 });
 
 app.put('/api/users/:id', async (req, res) => {
@@ -412,25 +438,19 @@ app.put('/api/users/:id', async (req, res) => {
             WHERE id = ?
         `);
         
-        stmt.run(
-            u.password, u.isActive ? 1 : 0, u.expiryDate, u.dataLimitGB,
-            u.concurrentLimit, u.notes, u.speedLimitUpload, u.speedLimitDownload, u.speedLimitTotal || 0, id,
-            function(err) {
-                if (err) return res.status(500).json({ error: err.message });
-                res.json({ success: true });
-            }
-        );
+        stmt.run(u.password, u.isActive ? 1 : 0, u.expiryDate, u.dataLimitGB, u.concurrentLimit, u.notes, u.speedLimitUpload, u.speedLimitDownload, u.speedLimitTotal || 0, id, function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ success: true });
+        });
     });
 });
 
 app.delete('/api/users/:id', (req, res) => {
     const id = req.params.id;
-    
     db.get("SELECT username FROM users WHERE id = ?", [id], async (err, row) => {
         if (row) {
              await runSystemCommand(`userdel -f "${row.username}"`);
              await runSystemCommand(`pkill -u "${row.username}"`);
-
              db.run("DELETE FROM users WHERE id = ?", [id], function(err) {
                 if (err) return res.status(500).json({ error: err.message });
                 res.json({ success: true });
@@ -454,7 +474,6 @@ app.get('/api/stats', (req, res) => {
 
     db.get("SELECT SUM(dataUsedGB) as total FROM users", (err, row) => {
         const totalTraffic = row ? row.total : 0;
-        
         res.json({
             cpu: cpuUsage,
             ram: (usedMem / totalMem) * 100,
@@ -470,9 +489,7 @@ app.use(express.static(join(__dirname, '../dist')));
 app.get('*', (req, res) => {
     const indexFile = join(__dirname, '../dist/index.html');
     res.sendFile(indexFile, (err) => {
-        if (err) {
-            res.status(500).send("Server Error.");
-        }
+        if (err) res.status(500).send("Server Error.");
     });
 });
 

@@ -26,7 +26,7 @@ const db = new sqlite3.Database(dbPath, (err) => {
 
 function initDb() {
     db.serialize(() => {
-        // Users Table - Updated to include speed tracking columns and Last Location
+        // Users Table
         db.run(`CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
             username TEXT UNIQUE,
@@ -47,51 +47,21 @@ function initDb() {
             lastIp TEXT,
             lastCountry TEXT,
             lastCity TEXT
-        )`, (err) => {
-            if (!err) {
-                // Migration: Check for missing columns and add them
-                db.all("PRAGMA table_info(users)", (err, rows) => {
-                    if (err) {
-                        console.error("Failed to check table info:", err);
-                        return;
-                    }
-                    
-                    const columns = rows.map(r => r.name);
-                    
-                    // Add speedLimitTotal if missing
-                    if (!columns.includes('speedLimitTotal')) {
-                        console.log("Migrating DB: Adding speedLimitTotal...");
-                        db.run("ALTER TABLE users ADD COLUMN speedLimitTotal INTEGER DEFAULT 0");
-                    }
+        )`);
 
-                    // Add currentUploadSpeed if missing
-                    if (!columns.includes('currentUploadSpeed')) {
-                        console.log("Migrating DB: Adding currentUploadSpeed...");
-                        db.run("ALTER TABLE users ADD COLUMN currentUploadSpeed REAL DEFAULT 0");
-                    }
-
-                    // Add currentDownloadSpeed if missing
-                    if (!columns.includes('currentDownloadSpeed')) {
-                        console.log("Migrating DB: Adding currentDownloadSpeed...");
-                        db.run("ALTER TABLE users ADD COLUMN currentDownloadSpeed REAL DEFAULT 0");
-                    }
-
-                    // Add location tracking columns
-                    if (!columns.includes('lastIp')) {
-                        console.log("Migrating DB: Adding lastIp...");
-                        db.run("ALTER TABLE users ADD COLUMN lastIp TEXT");
-                    }
-                    if (!columns.includes('lastCountry')) {
-                        console.log("Migrating DB: Adding lastCountry...");
-                        db.run("ALTER TABLE users ADD COLUMN lastCountry TEXT");
-                    }
-                    if (!columns.includes('lastCity')) {
-                        console.log("Migrating DB: Adding lastCity...");
-                        db.run("ALTER TABLE users ADD COLUMN lastCity TEXT");
-                    }
-                });
-            }
-        });
+        // Connection Logs Table (New)
+        db.run(`CREATE TABLE IF NOT EXISTS connection_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT,
+            ip TEXT,
+            country TEXT,
+            city TEXT,
+            device TEXT,
+            connected_at TEXT,
+            disconnected_at TEXT,
+            bytes_sent INTEGER DEFAULT 0,
+            bytes_received INTEGER DEFAULT 0
+        )`);
 
         // Settings Table
         db.run(`CREATE TABLE IF NOT EXISTS settings (
@@ -99,7 +69,7 @@ function initDb() {
             value TEXT
         )`);
 
-        // Seed initial settings if empty
+        // Seed initial settings
         db.get("SELECT count(*) as count FROM settings", (err, row) => {
             if (row && row.count === 0) {
                 const initialSettings = {
@@ -114,6 +84,19 @@ function initDb() {
                 const stmt = db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)");
                 Object.entries(initialSettings).forEach(([k, v]) => stmt.run(k, v));
                 stmt.finalize();
+            }
+        });
+        
+        // Ensure columns exist (Migration)
+        db.all("PRAGMA table_info(users)", (err, rows) => {
+            if (!err) {
+                const columns = rows.map(r => r.name);
+                if (!columns.includes('speedLimitTotal')) db.run("ALTER TABLE users ADD COLUMN speedLimitTotal INTEGER DEFAULT 0");
+                if (!columns.includes('currentUploadSpeed')) db.run("ALTER TABLE users ADD COLUMN currentUploadSpeed REAL DEFAULT 0");
+                if (!columns.includes('currentDownloadSpeed')) db.run("ALTER TABLE users ADD COLUMN currentDownloadSpeed REAL DEFAULT 0");
+                if (!columns.includes('lastIp')) db.run("ALTER TABLE users ADD COLUMN lastIp TEXT");
+                if (!columns.includes('lastCountry')) db.run("ALTER TABLE users ADD COLUMN lastCountry TEXT");
+                if (!columns.includes('lastCity')) db.run("ALTER TABLE users ADD COLUMN lastCity TEXT");
             }
         });
     });
