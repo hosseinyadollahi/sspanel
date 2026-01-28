@@ -181,12 +181,12 @@ const monitorTraffic = async () => {
                     // New Session Detected
                     const cleanIp = currentIp.replace(/^\[+|\]+$/g, '');
                     const now = new Date().toISOString();
-                    console.log(`[Connect] User: ${username} IP: ${cleanIp}`);
+                    // console.log(`[Connect] User: ${username} IP: ${cleanIp}`);
                     
                     // Use a Promise wrapper for db.run to get lastID
                     await new Promise((resolve) => {
                         db.run(`INSERT INTO connection_logs (username, ip, country, city, device, connected_at, bytes_sent, bytes_received) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, 
-                        [username, cleanIp, geo.countryCode, geo.city, 'SSH Tunnel', now, 0, 0], 
+                        [username, cleanIp, geo.countryCode, geo.city, 'SSH Client', now, 0, 0], 
                         function(err) {
                             if (!err) {
                                 activeSessionLogs.set(currentPid, { 
@@ -199,7 +199,14 @@ const monitorTraffic = async () => {
                         });
                     });
                 } else {
-                    // Update running total for session (optional, usually we update on close)
+                    // Update active session stats in DB (so the log view shows real-time usage)
+                    const session = activeSessionLogs.get(currentPid);
+                    const sessionSent = Math.max(0, currentBytesSent - session.startBytesSent);
+                    const sessionRecv = Math.max(0, currentBytesRecv - session.startBytesRecv);
+                    
+                    // Optional: Only update if changed significant amount to save IO, but WAL handles this well.
+                    db.run(`UPDATE connection_logs SET bytes_sent = ?, bytes_received = ? WHERE id = ?`, 
+                           [sessionSent, sessionRecv, session.logId]);
                 }
                 // -------------------------------
 
@@ -259,11 +266,6 @@ const monitorTraffic = async () => {
             const totalSent = finalCache ? Math.max(0, finalCache.bytes_sent - sessionInfo.startBytesSent) : 0;
             const totalRecv = finalCache ? Math.max(0, finalCache.bytes_received - sessionInfo.startBytesRecv) : 0;
             const disconnectedAt = new Date().toISOString();
-
-            // Check if finalCache exists (it should, but just in case)
-            if (finalCache) {
-                 console.log(`[Disconnect] User: ${finalCache.username} Total: ${totalSent+totalRecv} bytes`);
-            }
 
             db.run(`UPDATE connection_logs SET disconnected_at = ?, bytes_sent = ?, bytes_received = ? WHERE id = ?`, 
                 [disconnectedAt, totalSent, totalRecv, sessionInfo.logId]);

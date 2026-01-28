@@ -2,7 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useApp } from '../../core/context/AppContext';
-import { ArrowLeft, Wifi, Clock, Database, Globe, QrCode, Smartphone, Copy, Monitor, Network, Gauge, Infinity, CheckCircle, Activity, Server, ArrowDown, ArrowUp } from 'lucide-react';
+import { ArrowLeft, Wifi, Clock, Database, Globe, QrCode, Smartphone, Copy, Monitor, Network, Gauge, Infinity, CheckCircle, Activity, Server, ArrowDown, ArrowUp, MapPin, Calendar } from 'lucide-react';
 import { AreaChart, Area, Tooltip, ResponsiveContainer, XAxis, YAxis, CartesianGrid } from 'recharts';
 import { User } from '../../core/types';
 
@@ -13,8 +13,8 @@ export const UserDetail: React.FC = () => {
   const user = users.find(u => u.id === id);
   const [liveData, setLiveData] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'overview' | 'settings' | 'logs'>('overview');
-  const [usageHistory, setUsageHistory] = useState<any[]>([]);
   const [connectionLogs, setConnectionLogs] = useState<any[]>([]);
+  const [isLoadingLogs, setIsLoadingLogs] = useState(false);
 
   // Local state for editing
   const [editForm, setEditForm] = useState<Partial<User>>({});
@@ -38,30 +38,23 @@ export const UserDetail: React.FC = () => {
 
       const year = new Date(user.expiryDate).getFullYear();
       setUnlimitedExpiry(year > 2090);
-
-      // Generate Mock Historical Data Usage (Last 7 days)
-      const history = [];
-      const today = new Date();
-      for (let i = 6; i >= 0; i--) {
-        const d = new Date(today);
-        d.setDate(d.getDate() - i);
-        const dailyVal = Math.max(0.1, (Math.random() * (user.dataLimitGB > 0 ? user.dataLimitGB / 10 : 2))).toFixed(2);
-        history.push({
-          date: d.toLocaleDateString('en-US', { weekday: 'short' }),
-          usage: parseFloat(dailyVal)
-        });
-      }
-      setUsageHistory(history);
     }
   }, [user]);
 
-  // Fetch Logs when tab is active
+  // Fetch Real Logs
   useEffect(() => {
     if (activeTab === 'logs' && user) {
+        setIsLoadingLogs(true);
         fetch(`/api/users/${user.username}/logs`)
             .then(res => res.json())
-            .then(data => setConnectionLogs(data))
-            .catch(err => console.error("Failed to fetch logs", err));
+            .then(data => {
+                setConnectionLogs(data);
+                setIsLoadingLogs(false);
+            })
+            .catch(err => {
+                console.error("Failed to fetch logs", err);
+                setIsLoadingLogs(false);
+            });
     }
   }, [activeTab, user]);
 
@@ -127,12 +120,27 @@ export const UserDetail: React.FC = () => {
   }
 
   const formatBytes = (bytes: number) => {
-    if (!bytes) return '0 B';
+    if (!bytes || bytes === 0) return '0 B';
     const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   }
+
+  const formatDuration = (startStr: string, endStr?: string) => {
+      const start = new Date(startStr).getTime();
+      const end = endStr ? new Date(endStr).getTime() : Date.now();
+      const diffMin = Math.round((end - start) / 60000);
+      
+      if (!endStr) return <span className="text-green-400 font-bold animate-pulse">Online</span>;
+      if (diffMin < 1) return '< 1 min';
+      if (diffMin > 60) {
+          const hours = Math.floor(diffMin / 60);
+          const mins = diffMin % 60;
+          return `${hours}h ${mins}m`;
+      }
+      return `${diffMin} min`;
+  };
 
   const UnlimitedCheckbox = ({ label, checked, onChange }: { label: string, checked: boolean, onChange: (v: boolean) => void }) => (
      <label className="flex items-center gap-2 cursor-pointer select-none">
@@ -227,7 +235,7 @@ export const UserDetail: React.FC = () => {
                 </div>
               </div>
 
-              {/* Historical Data Usage */}
+              {/* Data Usage */}
               <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700">
                 <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-3 text-slate-400">
@@ -238,37 +246,12 @@ export const UserDetail: React.FC = () => {
                 <div className="text-xl font-bold text-white mb-3">
                     {user.dataUsedGB.toFixed(2)} / {user.dataLimitGB === 0 ? '∞' : user.dataLimitGB + ' GB'}
                 </div>
-                
-                {/* Historical Chart */}
-                <div className="h-20 w-full" dir="ltr">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={usageHistory}>
-                      <defs>
-                        <linearGradient id="usageGradient" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.8}/>
-                          <stop offset="95%" stopColor="#06b6d4" stopOpacity={0}/>
-                        </linearGradient>
-                      </defs>
-                      <Tooltip 
-                        contentStyle={{ backgroundColor: '#1e293b', borderColor: '#334155', borderRadius: '8px', fontSize: '12px' }}
-                        itemStyle={{ color: '#22d3ee' }}
-                        cursor={{ stroke: '#334155' }}
-                        formatter={(value: number) => [`${value} GB`, 'Usage']}
-                      />
-                      <Area 
-                        type="monotone" 
-                        dataKey="usage" 
-                        stroke="#06b6d4" 
-                        fill="url(#usageGradient)" 
-                        strokeWidth={2} 
-                        isAnimationActive={true}
-                      />
-                    </AreaChart>
-                  </ResponsiveContainer>
+                 <div className="w-full bg-slate-700 h-2 rounded-full overflow-hidden mb-2">
+                   <div className="bg-cyan-500 h-full transition-all duration-500" style={{width: `${Math.min(100, (user.dataUsedGB / (user.dataLimitGB || 1)) * 100)}%`}}></div>
                 </div>
-                <div className="flex justify-between text-[10px] text-slate-500 px-1 mt-1 font-mono">
-                    <span>7 Days ago</span>
-                    <span>Today</span>
+                <div className="flex justify-between text-xs text-slate-500">
+                    <span>Used</span>
+                    <span>Total</span>
                 </div>
               </div>
 
@@ -401,48 +384,66 @@ export const UserDetail: React.FC = () => {
         {activeTab === 'logs' && (
            <div className="animate-fadeIn">
              <div className="flex items-center justify-between mb-4">
-               <h3 className="font-bold text-white flex items-center gap-2"><Globe className="w-4 h-4" /> Connection Logs</h3>
-               <span className="text-xs text-slate-500">Live History</span>
+               <div>
+                   <h3 className="font-bold text-white flex items-center gap-2"><Globe className="w-4 h-4" /> Connection Sessions</h3>
+                   <p className="text-xs text-slate-500 mt-1">Detailed history of SSH connections</p>
+               </div>
+               <button onClick={() => { setIsLoadingLogs(true); fetch(`/api/users/${user.username}/logs`).then(res => res.json()).then(d => {setConnectionLogs(d); setIsLoadingLogs(false)}) }} className="p-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-slate-300">
+                  <Activity className={`w-4 h-4 ${isLoadingLogs ? 'animate-spin' : ''}`} />
+               </button>
              </div>
+             
              <div className="bg-slate-950 rounded-xl border border-slate-800 overflow-hidden">
                 {connectionLogs.length === 0 ? (
-                    <div className="p-8 text-center text-slate-500">No logs found yet. Connect via SSH to generate logs.</div>
+                    <div className="p-12 text-center flex flex-col items-center gap-3">
+                        <div className="w-12 h-12 bg-slate-900 rounded-full flex items-center justify-center text-slate-600"><Server className="w-6 h-6"/></div>
+                        <span className="text-slate-500">No connection history found.</span>
+                    </div>
                 ) : (
                     <table className="w-full text-left text-sm">
-                       <thead className="bg-slate-900 text-slate-400">
+                       <thead className="bg-slate-900 text-slate-400 border-b border-slate-800">
                           <tr>
-                             <th className="p-3">Time</th>
-                             <th className="p-3">IP / Location</th>
-                             <th className="p-3">Duration</th>
-                             <th className="p-3 text-right">Data</th>
+                             <th className="p-4 font-medium">Status / Duration</th>
+                             <th className="p-4 font-medium">Client Endpoint</th>
+                             <th className="p-4 font-medium">Connected At</th>
+                             <th className="p-4 font-medium text-right">Session Usage</th>
                           </tr>
                        </thead>
                        <tbody className="divide-y divide-slate-800 text-slate-300">
                           {connectionLogs.map((log, i) => {
-                             const start = new Date(log.connected_at);
-                             const end = log.disconnected_at ? new Date(log.disconnected_at) : null;
-                             const duration = end ? Math.round((end.getTime() - start.getTime()) / 1000 / 60) : 'Active';
-                             
                              return (
-                                 <tr key={i} className="hover:bg-slate-900/50">
-                                    <td className="p-3">
-                                        <div className="font-mono text-xs">{start.toLocaleDateString()}</div>
-                                        <div className="text-slate-500 text-xs">{start.toLocaleTimeString()}</div>
-                                    </td>
-                                    <td className="p-3">
-                                        <div className="flex items-center gap-2">
-                                            <span className="font-mono text-cyan-500">{log.ip}</span>
-                                        </div>
-                                        <div className="text-xs text-slate-500">
-                                            {getFlagEmoji(log.country)} {log.city || log.country}
+                                 <tr key={i} className="hover:bg-slate-900/50 transition-colors">
+                                    <td className="p-4">
+                                        <div className="flex flex-col gap-1">
+                                            <div className="text-xs font-bold">{formatDuration(log.connected_at, log.disconnected_at)}</div>
                                         </div>
                                     </td>
-                                    <td className="p-3 text-slate-400">
-                                        {duration === 'Active' ? <span className="text-green-400 animate-pulse">● Active</span> : `${duration} min`}
+                                    <td className="p-4">
+                                        <div className="flex flex-col gap-1">
+                                            <div className="flex items-center gap-2">
+                                                <span className="font-mono text-cyan-400 bg-cyan-950/30 px-2 py-0.5 rounded border border-cyan-900/50 text-xs">{log.ip}</span>
+                                            </div>
+                                            <div className="flex items-center gap-1 text-xs text-slate-400">
+                                                <MapPin className="w-3 h-3" />
+                                                <span>{getFlagEmoji(log.country)} {log.city || log.country || 'Unknown'}</span>
+                                            </div>
+                                        </div>
                                     </td>
-                                    <td className="p-3 text-right text-xs">
-                                        <div className="text-indigo-400">↑ {formatBytes(log.bytes_received)}</div>
-                                        <div className="text-cyan-400">↓ {formatBytes(log.bytes_sent)}</div>
+                                    <td className="p-4">
+                                        <div className="flex flex-col text-xs text-slate-400">
+                                            <span className="flex items-center gap-1"><Calendar className="w-3 h-3" /> {new Date(log.connected_at).toLocaleDateString()}</span>
+                                            <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {new Date(log.connected_at).toLocaleTimeString()}</span>
+                                        </div>
+                                    </td>
+                                    <td className="p-4 text-right">
+                                        <div className="flex flex-col items-end gap-1">
+                                           <div className="flex items-center gap-1 text-xs text-indigo-400">
+                                               <ArrowUp className="w-3 h-3" /> {formatBytes(log.bytes_received)}
+                                           </div>
+                                           <div className="flex items-center gap-1 text-xs text-cyan-400">
+                                               <ArrowDown className="w-3 h-3" /> {formatBytes(log.bytes_sent)}
+                                           </div>
+                                        </div>
                                     </td>
                                  </tr>
                              );
