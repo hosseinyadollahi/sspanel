@@ -38,6 +38,7 @@ const runSystemCommand = (command) => {
 
 // --- Monitoring Service ---
 const connectionCache = new Map(); 
+let liveUserStats = {}; // Global state for API access
 
 const monitorTraffic = async () => {
     if (os.platform() !== 'linux') return;
@@ -167,8 +168,10 @@ const monitorTraffic = async () => {
         }
     }
 
+    // Update global live stats for API
+    liveUserStats = userUpdates;
+
     // 3. Update Database
-    // We prepare the statement but handle errors to prevent crashes if columns are missing during migration
     const stmt = db.prepare(`
         UPDATE users SET 
         dataUsedGB = dataUsedGB + ?, 
@@ -240,7 +243,6 @@ const monitorTraffic = async () => {
                 checkEnforcement();
             });
             
-            // CRITICAL FIX: Finalize and Commit MUST happen inside this callback, after updates are queued
             stmt.finalize();
             db.run("COMMIT");
         });
@@ -285,26 +287,16 @@ app.get('/api/users', (req, res) => {
         if (err) return res.status(500).json({ error: err.message });
         
         const users = rows.map(u => {
-            const activeConns = [];
-            for (const [pid, info] of connectionCache.entries()) {
-                if (info.username === u.username) {
-                     activeConns.push({
-                        id: pid,
-                        ip: 'Active', 
-                        country: '-',
-                        device: 'SSH',
-                        currentDownloadSpeed: info.username === u.username ? (userUpdates[u.username]?.activeConns.find(c => c.id === pid)?.currentDownloadSpeed || 0) : 0, 
-                        currentUploadSpeed: 0
-                     });
-                }
-            }
+            // Retrieve live stats from global state
+            const stats = liveUserStats[u.username];
+            const activeConns = stats ? stats.activeConns : [];
 
-            // Fallback for simple list view if userUpdates not accessible in scope easily, 
-            // but we can rely on DB stats for general list
             return {
                 ...u,
                 isActive: !!u.isActive,
-                activeConnections: activeConns
+                activeConnections: activeConns,
+                currentUploadSpeed: stats ? stats.totalUpSpeed : 0,
+                currentDownloadSpeed: stats ? stats.totalDownSpeed : 0
             };
         });
         res.json(users);
