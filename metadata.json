@@ -1,0 +1,5 @@
+{
+  "name": "SSH Admin Panel",
+  "description": "Advanced SSH User Management Panel with real-time monitoring, traffic control, and user management.",
+  "requestFramePermissions": []
+}
