@@ -39,6 +39,10 @@ export interface User {
   speedLimitTotal: number; // New: Total combined speed limit
   activeConnections: ActiveConnection[];
   siteUsageHistory: SiteUsage[]; // Persistent history of visited sites
+  // Persistence
+  lastIp?: string;
+  lastCountry?: string;
+  lastCity?: string;
 }
 
 export interface AccessLog {

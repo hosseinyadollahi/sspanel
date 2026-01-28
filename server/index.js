@@ -21,13 +21,11 @@ app.use(bodyParser.json());
 const runSystemCommand = (command) => {
     return new Promise((resolve) => {
         if (os.platform() !== 'linux') {
-            // console.log(`[Simulated Command]: ${command}`);
-            return resolve({ stdout: '', success: true }); // Always success on dev
+            return resolve({ stdout: '', success: true }); 
         }
 
         exec(command, { maxBuffer: 1024 * 1024 * 5 }, (error, stdout, stderr) => {
             if (error) {
-                // console.error(`Error executing: ${command}`, error.message);
                 resolve({ stdout: '', stderr, success: false });
             } else {
                 resolve({ stdout, success: true });
@@ -39,11 +37,10 @@ const runSystemCommand = (command) => {
 // --- GeoIP Service ---
 const geoCache = new Map();
 const resolveGeo = async (ip) => {
-    // Clean IP (remove IPv6 mapping)
     const cleanIp = ip.replace('::ffff:', '');
     
     // Private IPs
-    if (cleanIp === '127.0.0.1' || cleanIp.startsWith('192.168.') || cleanIp.startsWith('10.')) {
+    if (cleanIp === '127.0.0.1' || cleanIp.startsWith('192.168.') || cleanIp.startsWith('10.') || cleanIp === '::1') {
         return { country: 'Local', countryCode: 'LO', city: 'Server' };
     }
 
@@ -51,28 +48,37 @@ const resolveGeo = async (ip) => {
         return geoCache.get(cleanIp);
     }
 
-    // Default pending state to prevent spamming API
-    geoCache.set(cleanIp, { country: 'Unknown', countryCode: '', city: '-' });
-
     try {
-        // Using ip-api.com (Free, no key required for low volume)
-        const res = await fetch(`http://ip-api.com/json/${cleanIp}?fields=status,country,countryCode,city`);
-        const data = await res.json();
-        
-        if (data.status === 'success') {
-            const geoData = {
-                country: data.country,
-                countryCode: data.countryCode,
-                city: data.city
-            };
-            geoCache.set(cleanIp, geoData);
-            return geoData;
+        // Using ip-api.com
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 1500); // 1.5s timeout
+
+        const res = await fetch(`http://ip-api.com/json/${cleanIp}?fields=status,country,countryCode,city`, {
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (res.ok) {
+            const data = await res.json();
+            if (data.status === 'success') {
+                const geoData = {
+                    country: data.country,
+                    countryCode: data.countryCode,
+                    city: data.city
+                };
+                geoCache.set(cleanIp, geoData);
+                return geoData;
+            }
         }
     } catch (e) {
-        console.error("GeoIP Fetch Error:", e.message);
+        // console.error("GeoIP Fetch Error:", e.message);
     }
     
-    return { country: 'Unknown', countryCode: '', city: '-' };
+    // Cache failures briefly to prevent spam
+    const unknown = { country: 'Unknown', countryCode: '', city: '-' };
+    geoCache.set(cleanIp, unknown);
+    setTimeout(() => geoCache.delete(cleanIp), 60000); // Retry after 1 min
+    return unknown;
 };
 
 // --- Monitoring Service ---
@@ -141,12 +147,22 @@ const monitorTraffic = async () => {
                         downDelta: 0, 
                         activeConns: [],
                         totalUpSpeed: 0,
-                        totalDownSpeed: 0
+                        totalDownSpeed: 0,
+                        lastIp: '',
+                        lastCity: '',
+                        lastCountry: ''
                     };
                 }
 
                 // Resolve Geo Info (Async but cached)
                 const geo = await resolveGeo(currentIp);
+
+                // Update aggregate IP info (use the first connection's IP)
+                if (!userUpdates[username].lastIp) {
+                    userUpdates[username].lastIp = currentIp;
+                    userUpdates[username].lastCity = geo.city;
+                    userUpdates[username].lastCountry = geo.countryCode;
+                }
 
                 userUpdates[username].activeConns.push({
                     id: currentPid,
@@ -207,20 +223,24 @@ const monitorTraffic = async () => {
     // Update global state
     liveUserStats = userUpdates;
 
-    // 3. Update Database & Enforce Limits
+    // 3. Update Database (With explicit IP/Location persistence)
+    // We update lastIp/City/Country only if the user is currently connected (update exists)
     const stmt = db.prepare(`
         UPDATE users SET 
         dataUsedGB = dataUsedGB + ?, 
         concurrentInUse = ?,
         currentUploadSpeed = ?,
-        currentDownloadSpeed = ?
+        currentDownloadSpeed = ?,
+        lastIp = COALESCE(?, lastIp),
+        lastCountry = COALESCE(?, lastCountry),
+        lastCity = COALESCE(?, lastCity)
         WHERE username = ?
     `);
 
     db.serialize(() => {
         db.run("BEGIN TRANSACTION");
         
-        db.all("SELECT username, dataLimitGB, expiryDate, isActive, id, speedLimitTotal, speedLimitUpload, speedLimitDownload FROM users", (err, rows) => {
+        db.all("SELECT username, dataLimitGB, expiryDate, isActive, id FROM users", (err, rows) => {
             if(err) {
                 console.error("DB Select Error:", err.message);
                 try { stmt.finalize(); } catch(e) {}
@@ -235,53 +255,38 @@ const monitorTraffic = async () => {
                 let activeCount = 0;
                 let upSpeed = 0;
                 let downSpeed = 0;
+                let lastIp = null;
+                let lastCountry = null;
+                let lastCity = null;
 
                 if (update) {
                     addGB = (update.upDelta + update.downDelta) / (1024 * 1024 * 1024);
                     activeCount = update.activeConns.length;
                     upSpeed = update.totalUpSpeed;
                     downSpeed = update.totalDownSpeed;
+                    lastIp = update.lastIp || null;
+                    lastCountry = update.lastCountry || null;
+                    lastCity = update.lastCity || null;
 
-                    // --- SPEED LIMIT ENFORCEMENT ---
-                    // Since Node.js cannot easily throttle bandwidth (requires tc/iptables),
-                    // we ENFORCE limits by terminating connections that exceed the limit.
-                    const buffer = 1.2; // Allow 20% burst before killing
-                    let violation = false;
-
-                    if (user.speedLimitTotal > 0 && (upSpeed + downSpeed) > (user.speedLimitTotal * buffer)) {
-                        violation = true;
-                    } else if (user.speedLimitDownload > 0 && downSpeed > (user.speedLimitDownload * buffer)) {
-                        violation = true;
-                    } else if (user.speedLimitUpload > 0 && upSpeed > (user.speedLimitUpload * buffer)) {
-                        violation = true;
-                    }
-
-                    if (violation) {
-                        console.log(`User ${user.username} exceeded speed limit (${upSpeed.toFixed(2)}/${downSpeed.toFixed(2)}). Terminating connections.`);
-                        update.activeConns.forEach(async (conn) => {
-                            await runSystemCommand(`kill -9 ${conn.id}`);
-                        });
-                        // Reset stats since connection is dead
-                        activeCount = 0;
-                        upSpeed = 0; 
-                        downSpeed = 0;
-                    }
-                    // -------------------------------
+                    // --- SPEED MONITORING ONLY (No Kill) ---
+                    // We removed the kill logic to prevent session drops.
+                    // Future implementation: Use `tc` for traffic shaping instead of killing.
+                    // ---------------------------------------
                 }
 
                 // Run update
-                stmt.run(addGB, activeCount, upSpeed, downSpeed, user.username);
+                stmt.run(addGB, activeCount, upSpeed, downSpeed, lastIp, lastCountry, lastCity, user.username);
 
                 // Data & Expiry Enforcement
-                if (update) { // Only check if there was activity to save DB reads
-                    const totalUsed = user.dataUsedGB + addGB; // Use memory value for check
+                if (update) { 
+                    const totalUsed = user.dataUsedGB + addGB; 
                     let shouldLock = false;
 
                     if (user.dataLimitGB > 0 && totalUsed >= user.dataLimitGB) shouldLock = true;
                     if (user.expiryDate && new Date() > new Date(user.expiryDate)) shouldLock = true;
 
                     if (shouldLock && user.isActive) {
-                        console.log(`Locking user: ${user.username}`);
+                        console.log(`Locking user: ${user.username} (Quota/Expiry)`);
                         await runSystemCommand(`usermod -L "${user.username}"`);
                         await runSystemCommand(`pkill -u "${user.username}"`);
                         db.run("UPDATE users SET isActive = 0 WHERE id = ?", [user.id]);
@@ -334,7 +339,14 @@ app.get('/api/users', (req, res) => {
         
         const users = rows.map(u => {
             const stats = liveUserStats[u.username];
-            const activeConns = stats ? stats.activeConns : [];
+            
+            // Merge Live Stats with DB Persisted stats
+            // If user is offline (no live stats), fall back to DB 'last' values
+            let activeConns = stats ? stats.activeConns : [];
+
+            // If no active connections, we might want to show the last known location in the UI
+            // But activeConnections implies *currently* active.
+            // We will pass lastIp/City separately in the User object.
 
             return {
                 ...u,

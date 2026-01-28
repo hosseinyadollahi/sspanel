@@ -26,7 +26,7 @@ const db = new sqlite3.Database(dbPath, (err) => {
 
 function initDb() {
     db.serialize(() => {
-        // Users Table - Updated to include speed tracking columns
+        // Users Table - Updated to include speed tracking columns and Last Location
         db.run(`CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
             username TEXT UNIQUE,
@@ -43,7 +43,10 @@ function initDb() {
             speedLimitDownload INTEGER DEFAULT 0,
             speedLimitTotal INTEGER DEFAULT 0,
             currentUploadSpeed REAL DEFAULT 0,
-            currentDownloadSpeed REAL DEFAULT 0
+            currentDownloadSpeed REAL DEFAULT 0,
+            lastIp TEXT,
+            lastCountry TEXT,
+            lastCity TEXT
         )`, (err) => {
             if (!err) {
                 // Migration: Check for missing columns and add them
@@ -61,7 +64,7 @@ function initDb() {
                         db.run("ALTER TABLE users ADD COLUMN speedLimitTotal INTEGER DEFAULT 0");
                     }
 
-                    // Add currentUploadSpeed if missing (Fixes the SQLITE_ERROR)
+                    // Add currentUploadSpeed if missing
                     if (!columns.includes('currentUploadSpeed')) {
                         console.log("Migrating DB: Adding currentUploadSpeed...");
                         db.run("ALTER TABLE users ADD COLUMN currentUploadSpeed REAL DEFAULT 0");
@@ -71,6 +74,20 @@ function initDb() {
                     if (!columns.includes('currentDownloadSpeed')) {
                         console.log("Migrating DB: Adding currentDownloadSpeed...");
                         db.run("ALTER TABLE users ADD COLUMN currentDownloadSpeed REAL DEFAULT 0");
+                    }
+
+                    // Add location tracking columns
+                    if (!columns.includes('lastIp')) {
+                        console.log("Migrating DB: Adding lastIp...");
+                        db.run("ALTER TABLE users ADD COLUMN lastIp TEXT");
+                    }
+                    if (!columns.includes('lastCountry')) {
+                        console.log("Migrating DB: Adding lastCountry...");
+                        db.run("ALTER TABLE users ADD COLUMN lastCountry TEXT");
+                    }
+                    if (!columns.includes('lastCity')) {
+                        console.log("Migrating DB: Adding lastCity...");
+                        db.run("ALTER TABLE users ADD COLUMN lastCity TEXT");
                     }
                 });
             }

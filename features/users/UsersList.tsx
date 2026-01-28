@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../core/context/AppContext';
 import { Link } from 'react-router-dom';
-import { Plus, Search, Trash2, Eye, RefreshCw, CheckCircle, XCircle, Smartphone, Globe, Monitor, Pencil, Gauge, Infinity } from 'lucide-react';
+import { Plus, Search, Trash2, Eye, RefreshCw, CheckCircle, XCircle, Smartphone, Globe, Monitor, Pencil, Gauge, Infinity, MapPin } from 'lucide-react';
 import { User } from '../../core/types';
 
 export const UsersList: React.FC = () => {
@@ -273,6 +273,16 @@ export const UsersList: React.FC = () => {
                              <Monitor className="w-3 h-3" />
                              {user.activeConnections[0].device}
                            </span>
+                        </div>
+                     ) : (user.lastIp) ? (
+                        <div className="flex flex-col text-xs text-slate-500 opacity-60">
+                           <span className="flex items-center gap-1">
+                             <MapPin className="w-3 h-3" />
+                             {user.lastIp}
+                           </span>
+                           {user.lastCountry && (
+                               <span title={`${user.lastCity || ''}, ${user.lastCountry}`}>{getFlagEmoji(user.lastCountry)} {user.lastCity || user.lastCountry}</span>
+                           )}
                         </div>
                      ) : (
                         <span className="text-xs text-slate-600">-</span>
