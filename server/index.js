@@ -58,12 +58,10 @@ const monitorTraffic = async () => {
     let currentBytesRecv = 0;
 
     // Iterate lines to parse SS output
-    // State machine approach because output spans multiple lines
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
         
         // Line type 1: ESTAB and Process/IP info
-        // Example: ESTAB 0 0 [::ffff:192.168.1.5]:22 [::ffff:192.168.1.10]:54321 users:(("sshd",pid=1234,fd=3))
         if (line.startsWith('ESTAB')) {
              // Reset for new block
             currentPid = null;
@@ -82,8 +80,7 @@ const monitorTraffic = async () => {
             }
         }
         
-        // Line type 2: Metrics (indented usually)
-        // Example: 	 skmem:(r0,rb369280,t0,tb87040,f0,w0,o0,bl0,d0) bytes_acked:5025 bytes_received:123
+        // Line type 2: Metrics
         if (currentPid && (line.includes('bytes_acked') || line.includes('bytes_received'))) {
             const ackedMatch = line.match(/bytes_acked:(\d+)/);
             const receivedMatch = line.match(/bytes_received:(\d+)/);
@@ -98,15 +95,8 @@ const monitorTraffic = async () => {
                 username = connectionCache.get(currentPid).username;
             } else {
                 // Determine user ownership
-                // Try direct ps first
                 const { stdout: userOut } = await runSystemCommand(`ps -o user= -p ${currentPid}`);
                 username = userOut.trim();
-
-                // Fallback: If root, it might be the privileged separator. 
-                // We could try to find child processes or check active users, 
-                // but usually for 'nologin' tunnel users, the sshd process changes owner.
-                // If it remains root (rare in some configs), traffic accounting is hard without matching IP to auth logs.
-                // We assume standard setup here.
             }
 
             if (username && username !== 'root' && username !== 'sshd') {
@@ -178,6 +168,7 @@ const monitorTraffic = async () => {
     }
 
     // 3. Update Database
+    // We prepare the statement but handle errors to prevent crashes if columns are missing during migration
     const stmt = db.prepare(`
         UPDATE users SET 
         dataUsedGB = dataUsedGB + ?, 
@@ -185,13 +176,20 @@ const monitorTraffic = async () => {
         currentUploadSpeed = ?,
         currentDownloadSpeed = ?
         WHERE username = ?
-    `);
+    `, (err) => {
+        if (err) console.error("DB Prepare Error:", err.message);
+    });
 
     db.serialize(() => {
         db.run("BEGIN TRANSACTION");
         
         db.all("SELECT username, dataLimitGB, expiryDate, isActive, id FROM users", (err, rows) => {
-            if(err) return;
+            if(err) {
+                console.error("DB Select Error:", err.message);
+                try { stmt.finalize(); } catch(e) {}
+                db.run("ROLLBACK");
+                return;
+            }
             
             rows.forEach(user => {
                 const update = userUpdates[user.username];
@@ -208,14 +206,19 @@ const monitorTraffic = async () => {
                     downSpeed = update.totalDownSpeed;
                 }
 
-                stmt.run(addGB, activeCount, upSpeed, downSpeed, user.username);
+                // Run update safely
+                stmt.run(addGB, activeCount, upSpeed, downSpeed, user.username, (err) => {
+                    if (err) console.error("DB Update Error:", err.message);
+                });
 
                 // Enforcement (Limit & Expiry)
                 const checkEnforcement = async () => {
                      let shouldLock = false;
                      
                      db.get("SELECT dataUsedGB FROM users WHERE id = ?", [user.id], async (err, rowStats) => {
-                        if (!rowStats) return;
+                        if (err || !rowStats) return;
+                        
+                        // Use the updated value approximately (addGB is small delta)
                         const totalUsed = rowStats.dataUsedGB + addGB;
                         
                         // Data Limit
@@ -236,17 +239,17 @@ const monitorTraffic = async () => {
                 };
                 checkEnforcement();
             });
+            
+            // CRITICAL FIX: Finalize and Commit MUST happen inside this callback, after updates are queued
+            stmt.finalize();
+            db.run("COMMIT");
         });
-        
-        db.run("COMMIT");
     });
-    stmt.finalize();
 };
 
 setInterval(monitorTraffic, 2000);
 
 // --- API Routes ---
-// ... (Rest of the file remains similar, just ensuring new Settings routes work implicitly via database structure)
 
 // 1. Settings
 app.get('/api/settings', (req, res) => {
@@ -276,7 +279,7 @@ app.post('/api/settings', (req, res) => {
     stmt.finalize();
 });
 
-// 2. Users (Same as before)
+// 2. Users
 app.get('/api/users', (req, res) => {
     db.all("SELECT * FROM users", (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -290,12 +293,14 @@ app.get('/api/users', (req, res) => {
                         ip: 'Active', 
                         country: '-',
                         device: 'SSH',
-                        currentDownloadSpeed: 0, 
+                        currentDownloadSpeed: info.username === u.username ? (userUpdates[u.username]?.activeConns.find(c => c.id === pid)?.currentDownloadSpeed || 0) : 0, 
                         currentUploadSpeed: 0
                      });
                 }
             }
 
+            // Fallback for simple list view if userUpdates not accessible in scope easily, 
+            // but we can rely on DB stats for general list
             return {
                 ...u,
                 isActive: !!u.isActive,
