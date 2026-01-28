@@ -3,7 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useApp } from '../../core/context/AppContext';
 import { ArrowLeft, Wifi, Clock, Database, Globe, QrCode, Smartphone, Copy, Monitor, Network, Gauge, Infinity, CheckCircle, Activity, Server, ArrowDown, ArrowUp } from 'lucide-react';
-import { AreaChart, Area, Tooltip, ResponsiveContainer } from 'recharts';
+import { AreaChart, Area, Tooltip, ResponsiveContainer, XAxis, YAxis, CartesianGrid } from 'recharts';
 import { User } from '../../core/types';
 
 export const UserDetail: React.FC = () => {
@@ -13,6 +13,7 @@ export const UserDetail: React.FC = () => {
   const user = users.find(u => u.id === id);
   const [liveData, setLiveData] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'overview' | 'settings'>('overview');
+  const [usageHistory, setUsageHistory] = useState<any[]>([]);
 
   // Local state for editing
   const [editForm, setEditForm] = useState<Partial<User>>({});
@@ -36,6 +37,21 @@ export const UserDetail: React.FC = () => {
 
       const year = new Date(user.expiryDate).getFullYear();
       setUnlimitedExpiry(year > 2090);
+
+      // Generate Mock Historical Data Usage (Last 7 days)
+      const history = [];
+      const today = new Date();
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(today);
+        d.setDate(d.getDate() - i);
+        // Random usage logic for demo purposes
+        const dailyVal = Math.max(0.1, (Math.random() * (user.dataLimitGB > 0 ? user.dataLimitGB / 10 : 2))).toFixed(2);
+        history.push({
+          date: d.toLocaleDateString('en-US', { weekday: 'short' }),
+          usage: parseFloat(dailyVal)
+        });
+      }
+      setUsageHistory(history);
     }
   }, [user]);
 
@@ -104,12 +120,6 @@ export const UserDetail: React.FC = () => {
      </label>
   );
 
-  // Helper to format MB/GB
-  const formatSize = (mb: number) => {
-      if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`;
-      return `${mb.toFixed(1)} MB`;
-  };
-
   return (
     <div className="space-y-6">
       <button onClick={() => navigate('/users')} className="flex items-center gap-2 text-slate-400 hover:text-white transition-colors">
@@ -165,6 +175,7 @@ export const UserDetail: React.FC = () => {
 
             {/* Live Stats */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {/* Real-time Speed */}
               <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700 relative overflow-hidden group">
                 <div className="absolute top-0 right-0 p-3 opacity-5 group-hover:opacity-10 transition-opacity">
                     <Activity className="w-16 h-16 text-indigo-500" />
@@ -191,30 +202,66 @@ export const UserDetail: React.FC = () => {
                 </div>
               </div>
 
+              {/* Historical Data Usage */}
               <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700">
-                <div className="flex items-center gap-3 mb-2 text-slate-400">
-                  <Database className="w-4 h-4" />
-                  <span className="text-sm">Data Usage</span>
+                <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-3 text-slate-400">
+                        <Database className="w-4 h-4" />
+                        <span className="text-sm">Data Usage</span>
+                    </div>
                 </div>
-                <div className="text-xl font-bold text-white mb-2">{user.dataUsedGB.toFixed(2)} / {user.dataLimitGB === 0 ? '∞' : user.dataLimitGB + ' GB'}</div>
-                <div className="w-full bg-slate-700 h-2 rounded-full overflow-hidden">
-                   <div className="bg-cyan-500 h-full" style={{width: `${(user.dataUsedGB / (user.dataLimitGB || 1)) * 100}%`}}></div>
+                <div className="text-xl font-bold text-white mb-3">
+                    {user.dataUsedGB.toFixed(2)} / {user.dataLimitGB === 0 ? '∞' : user.dataLimitGB + ' GB'}
+                </div>
+                
+                {/* Historical Chart */}
+                <div className="h-20 w-full" dir="ltr">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={usageHistory}>
+                      <defs>
+                        <linearGradient id="usageGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.8}/>
+                          <stop offset="95%" stopColor="#06b6d4" stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
+                      <Tooltip 
+                        contentStyle={{ backgroundColor: '#1e293b', borderColor: '#334155', borderRadius: '8px', fontSize: '12px' }}
+                        itemStyle={{ color: '#22d3ee' }}
+                        cursor={{ stroke: '#334155' }}
+                        formatter={(value: number) => [`${value} GB`, 'Usage']}
+                      />
+                      <Area 
+                        type="monotone" 
+                        dataKey="usage" 
+                        stroke="#06b6d4" 
+                        fill="url(#usageGradient)" 
+                        strokeWidth={2} 
+                        isAnimationActive={true}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="flex justify-between text-[10px] text-slate-500 px-1 mt-1 font-mono">
+                    <span>7 Days ago</span>
+                    <span>Today</span>
                 </div>
               </div>
+
+              {/* Limits & Expiry */}
               <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700">
                  <div className="flex items-center gap-3 mb-2 text-slate-400">
                     <Gauge className="w-4 h-4" />
                     <span className="text-sm">Limits</span>
                  </div>
-                 <div className="flex justify-between">
-                     <div>
-                         <div className="text-xs text-slate-500">Speed Config</div>
+                 <div className="flex justify-between h-full pb-4">
+                     <div className="flex flex-col justify-center">
+                         <div className="text-xs text-slate-500 mb-1">Speed Config</div>
                          <div className="text-lg font-bold text-white">
                              {(user.speedLimitTotal && user.speedLimitTotal > 0) ? `Total: ${user.speedLimitTotal}` : (user.speedLimitDownload === 0 && user.speedLimitUpload === 0) ? 'Unlimited' : `${user.speedLimitDownload}/${user.speedLimitUpload}`}
                          </div>
                      </div>
-                     <div className="text-right">
-                         <div className="text-xs text-slate-500">Expiry</div>
+                     <div className="text-right flex flex-col justify-center">
+                         <div className="text-xs text-slate-500 mb-1">Expiry</div>
                          <div className="text-lg font-bold text-white">
                              {new Date(user.expiryDate).getFullYear() > 2090 ? <Infinity className="inline w-5 h-5"/> : Math.max(0, Math.ceil((new Date(user.expiryDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24))) + ' Days'}
                          </div>
