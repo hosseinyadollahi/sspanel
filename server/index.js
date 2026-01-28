@@ -77,7 +77,9 @@ const monitorTraffic = async () => {
         // Line 1: State, IP info, Process info
         if (line.startsWith('ESTAB')) {
             const pidMatch = line.match(/users:\(\("sshd",pid=(\d+)/);
-            const ipMatch = line.match(/(\d+\.\d+\.\d+\.\d+):\d+\s+(\d+\.\d+\.\d+\.\d+)/); // Local -> Remote
+            // Updated Regex: Handles IPv4, IPv6 (brackets/colons)
+            // Matches: [IP]:Port or IP:Port -> space -> [IP]:Port or IP:Port
+            const ipMatch = line.match(/([0-9a-fA-F.:\[\]]+):[\w]+\s+([0-9a-fA-F.:\[\]]+)/);
             
             if (pidMatch && ipMatch) {
                 currentPid = pidMatch[1];
@@ -230,10 +232,6 @@ const monitorTraffic = async () => {
                      // inside this JS loop without complexity. 
                      // We approximate check using JS state or trigger a lock in next cycle.
                      // Better: check against the `row` data + `addGB`.
-                     
-                     // Retrieve current total used from DB logic is hard inside loop. 
-                     // Let's rely on the Frontend/Next cycle or a separate query?
-                     // Let's do a simple check:
                      
                      // We need the updated total.
                      db.get("SELECT dataUsedGB FROM users WHERE id = ?", [user.id], async (err, rowStats) => {

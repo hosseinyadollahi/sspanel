@@ -297,7 +297,12 @@ export const UserDetail: React.FC = () => {
            <div className="space-y-4 max-w-2xl mx-auto animate-fadeIn">
               <div className="space-y-2">
                  <label className="text-sm text-slate-400">New Password</label>
-                 <input type="text" value={editForm.password} onChange={e => setEditForm({...editForm, password: e.target.value})} className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white" />
+                 <input 
+                     type="text" 
+                     value={editForm.password} 
+                     onChange={e => setEditForm({...editForm, password: e.target.value.replace(/[^a-zA-Z0-9]/g, '')})} 
+                     className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white" 
+                 />
               </div>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

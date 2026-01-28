@@ -52,7 +52,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       
       const interval = setInterval(() => {
           fetchStats();
-          // simulateLiveTraffic(); // Removed to show real (zero/actual) speed
       }, 2000);
 
       return () => {
@@ -181,8 +180,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const generateRandomPassword = () => {
-    // Removed '@' from the character set as requested
-    const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%^&*";
+    // Only alphanumeric characters (a-z, A-Z, 0-9) to prevent shell issues
+    const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let pass = "";
     for (let i = 0; i < 12; i++) {
       pass += chars.charAt(Math.floor(Math.random() * chars.length));

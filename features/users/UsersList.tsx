@@ -55,7 +55,8 @@ export const UsersList: React.FC = () => {
   const filteredUsers = users.filter(u => u.username.toLowerCase().includes(searchTerm.toLowerCase()));
 
   const generateRandomUsername = () => {
-    return `user_${Math.floor(Math.random() * 9000) + 1000}`;
+    // Letters + Numbers only, no special chars like underscore
+    return `user${Math.floor(Math.random() * 9000) + 1000}`;
   };
 
   const openCreateModal = () => {
@@ -317,14 +318,26 @@ export const UsersList: React.FC = () => {
                 <div className="space-y-2">
                   <label className="text-sm text-slate-400">Username</label>
                   <div className="relative">
-                    <input required type="text" value={newUser.username} onChange={e => setNewUser({...newUser, username: e.target.value})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white" />
+                    <input 
+                        required 
+                        type="text" 
+                        value={newUser.username} 
+                        onChange={e => setNewUser({...newUser, username: e.target.value.replace(/[^a-zA-Z0-9]/g, '')})} 
+                        className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white" 
+                    />
                     <button type="button" onClick={() => setNewUser({...newUser, username: generateRandomUsername()})} className="absolute right-2 top-2 p-1 text-slate-500 hover:text-indigo-400"><RefreshCw className="w-4 h-4" /></button>
                   </div>
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm text-slate-400">Password</label>
                   <div className="flex gap-2">
-                    <input required type="text" value={newUser.password} onChange={e => setNewUser({...newUser, password: e.target.value})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white" />
+                    <input 
+                        required 
+                        type="text" 
+                        value={newUser.password} 
+                        onChange={e => setNewUser({...newUser, password: e.target.value.replace(/[^a-zA-Z0-9]/g, '')})} 
+                        className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white" 
+                    />
                     <button type="button" onClick={setRandomPass} className="bg-indigo-600/20 text-indigo-400 p-3 rounded-xl hover:bg-indigo-600/30"><RefreshCw className="w-5 h-5" /></button>
                   </div>
                 </div>
@@ -448,7 +461,12 @@ export const UsersList: React.FC = () => {
             <form onSubmit={handleQuickEditSave} className="p-6 space-y-4">
                 <div className="space-y-2">
                     <label className="text-sm text-slate-400">Password</label>
-                    <input type="text" value={quickEditUser.password} onChange={e => setQuickEditUser({...quickEditUser, password: e.target.value})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white" />
+                    <input 
+                        type="text" 
+                        value={quickEditUser.password} 
+                        onChange={e => setQuickEditUser({...quickEditUser, password: e.target.value.replace(/[^a-zA-Z0-9]/g, '')})} 
+                        className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white" 
+                    />
                 </div>
                 
                 <div className="grid grid-cols-2 gap-4">
