@@ -69,7 +69,8 @@ function initDb() {
                     adminUser: 'admin',
                     adminPass: 'admin123',
                     is2FAEnabled: 'false',
-                    secret2FA: 'JBSWY3DPEHPK3PXP'
+                    secret2FA: 'JBSWY3DPEHPK3PXP',
+                    connectionRemark: 'SSH-Panel'
                 };
                 const stmt = db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)");
                 Object.entries(initialSettings).forEach(([k, v]) => stmt.run(k, v));

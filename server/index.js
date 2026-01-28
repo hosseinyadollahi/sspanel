@@ -37,25 +37,14 @@ const runSystemCommand = (command) => {
 };
 
 // --- Monitoring Service ---
-// Stores previous byte counts to calculate speed and delta usage
 const connectionCache = new Map(); 
-/* 
-  connectionCache structure:
-  Key: PID
-  Value: { 
-    bytes_sent: number, 
-    bytes_received: number, 
-    last_update: timestamp,
-    username: string 
-  }
-*/
 
 const monitorTraffic = async () => {
     if (os.platform() !== 'linux') return;
 
     // 1. Get detailed socket stats for SSH (port 22)
-    // -t: tcp, -n: numeric, -i: internal info (bytes), -p: process
-    const { stdout, success } = await runSystemCommand(`ss -tnip 'sport = :22'`);
+    // -t: tcp, -n: numeric, -i: internal info (bytes), -p: process, -o: timer
+    const { stdout, success } = await runSystemCommand(`ss -tnipo 'sport = :22'`);
     
     if (!success) return;
 
@@ -63,56 +52,65 @@ const monitorTraffic = async () => {
     const activePids = new Set();
     const userUpdates = {}; // Map<username, { uploadDelta: 0, downloadDelta: 0, activeConns: [] }>
 
-    // 2. Parse ss output
-    // Looking for lines like: 
-    // ESTAB ... users:(("sshd",pid=1234,fd=3))
-    // ... bytes_acked:100 bytes_received:200 ...
-    
     let currentPid = null;
     let currentIp = null;
+    let currentBytesSent = 0;
+    let currentBytesRecv = 0;
 
+    // Iterate lines to parse SS output
+    // State machine approach because output spans multiple lines
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
         
-        // Line 1: State, IP info, Process info
+        // Line type 1: ESTAB and Process/IP info
+        // Example: ESTAB 0 0 [::ffff:192.168.1.5]:22 [::ffff:192.168.1.10]:54321 users:(("sshd",pid=1234,fd=3))
         if (line.startsWith('ESTAB')) {
-            const pidMatch = line.match(/users:\(\("sshd",pid=(\d+)/);
-            // Updated Regex: Handles IPv4, IPv6 (brackets/colons)
-            // Matches: [IP]:Port or IP:Port -> space -> [IP]:Port or IP:Port
+             // Reset for new block
+            currentPid = null;
+            currentIp = null;
+            currentBytesSent = 0;
+            currentBytesRecv = 0;
+
+            const pidMatch = line.match(/users:\(\(".*?",pid=(\d+)/); // Capture any process name
+            // Robust IP matching for IPv4 mapped IPv6 or pure IPv4
             const ipMatch = line.match(/([0-9a-fA-F.:\[\]]+):[\w]+\s+([0-9a-fA-F.:\[\]]+)/);
             
             if (pidMatch && ipMatch) {
                 currentPid = pidMatch[1];
-                currentIp = ipMatch[2]; // Remote IP
+                currentIp = ipMatch[2];
                 activePids.add(currentPid);
-            } else {
-                currentPid = null;
             }
-        } 
-        // Line 2 (usually): Metrics (bytes_acked, bytes_received)
-        else if (currentPid && (line.includes('bytes_acked') || line.includes('bytes_received'))) {
-            // bytes_acked = Data sent BY server (Download for user)
-            // bytes_received = Data received BY server (Upload for user)
+        }
+        
+        // Line type 2: Metrics (indented usually)
+        // Example: 	 skmem:(r0,rb369280,t0,tb87040,f0,w0,o0,bl0,d0) bytes_acked:5025 bytes_received:123
+        if (currentPid && (line.includes('bytes_acked') || line.includes('bytes_received'))) {
             const ackedMatch = line.match(/bytes_acked:(\d+)/);
             const receivedMatch = line.match(/bytes_received:(\d+)/);
             
-            const bytesSent = ackedMatch ? parseInt(ackedMatch[1]) : 0;
-            const bytesRecv = receivedMatch ? parseInt(receivedMatch[1]) : 0;
+            currentBytesSent = ackedMatch ? parseInt(ackedMatch[1]) : 0;
+            currentBytesRecv = receivedMatch ? parseInt(receivedMatch[1]) : 0;
 
-            // Determine User for this PID
+            // Resolve User
             let username = null;
             
-            // Check cache first
             if (connectionCache.has(currentPid)) {
                 username = connectionCache.get(currentPid).username;
             } else {
-                // If not in cache, resolve PID to User
+                // Determine user ownership
+                // Try direct ps first
                 const { stdout: userOut } = await runSystemCommand(`ps -o user= -p ${currentPid}`);
                 username = userOut.trim();
+
+                // Fallback: If root, it might be the privileged separator. 
+                // We could try to find child processes or check active users, 
+                // but usually for 'nologin' tunnel users, the sshd process changes owner.
+                // If it remains root (rare in some configs), traffic accounting is hard without matching IP to auth logs.
+                // We assume standard setup here.
             }
 
-            if (username && username !== 'root') { // Ignore root ssh sessions
-                // Initialize user aggregate data if needed
+            if (username && username !== 'root' && username !== 'sshd') {
+                 // Initialize aggregate
                 if (!userUpdates[username]) {
                     userUpdates[username] = { 
                         upDelta: 0, 
@@ -123,32 +121,30 @@ const monitorTraffic = async () => {
                     };
                 }
 
-                // Add connection info
+                // Add to active connections list for frontend
                 userUpdates[username].activeConns.push({
                     id: currentPid,
                     ip: currentIp,
-                    device: 'SSH Client', // Unknown without deep packet inspection
+                    device: 'SSH Tunnel', 
                     country: 'Unknown',
                     connectedAt: new Date().toISOString(),
                     currentDownloadSpeed: 0,
                     currentUploadSpeed: 0,
-                    sessionUsageMB: (bytesSent + bytesRecv) / 1024 / 1024
+                    sessionUsageMB: (currentBytesSent + currentBytesRecv) / 1024 / 1024
                 });
 
-                // Calculate Deltas (Traffic happened since last check)
+                // Calculate Usage Deltas
                 let prev = connectionCache.get(currentPid);
                 if (!prev) {
-                    prev = { bytes_sent: bytesSent, bytes_received: bytesRecv, last_update: Date.now(), username };
+                    prev = { bytes_sent: currentBytesSent, bytes_received: currentBytesRecv, last_update: Date.now(), username };
                 }
 
-                // Handle counter resets (new connection or re-use) usually ss counters are cumulative for the socket
-                const deltaSent = Math.max(0, bytesSent - prev.bytes_sent);
-                const deltaRecv = Math.max(0, bytesRecv - prev.bytes_received);
+                const deltaSent = Math.max(0, currentBytesSent - prev.bytes_sent);
+                const deltaRecv = Math.max(0, currentBytesRecv - prev.bytes_received);
                 
-                // Calculate Speed (Mbps)
-                // interval is approx 2000ms
+                // Speed Calculation
                 const now = Date.now();
-                const timeDiff = (now - prev.last_update) / 1000; // seconds
+                const timeDiff = (now - prev.last_update) / 1000; 
                 if (timeDiff > 0) {
                      const downSpeedMbps = (deltaSent * 8) / (1024 * 1024) / timeDiff;
                      const upSpeedMbps = (deltaRecv * 8) / (1024 * 1024) / timeDiff;
@@ -156,34 +152,32 @@ const monitorTraffic = async () => {
                      userUpdates[username].totalDownSpeed += downSpeedMbps;
                      userUpdates[username].totalUpSpeed += upSpeedMbps;
                      
-                     // Update the specific connection object in the array
-                     const connIndex = userUpdates[username].activeConns.length - 1;
-                     userUpdates[username].activeConns[connIndex].currentDownloadSpeed = downSpeedMbps;
-                     userUpdates[username].activeConns[connIndex].currentUploadSpeed = upSpeedMbps;
+                     const idx = userUpdates[username].activeConns.length - 1;
+                     userUpdates[username].activeConns[idx].currentDownloadSpeed = downSpeedMbps;
+                     userUpdates[username].activeConns[idx].currentUploadSpeed = upSpeedMbps;
                 }
 
                 userUpdates[username].upDelta += deltaRecv;
                 userUpdates[username].downDelta += deltaSent;
 
-                // Update Cache
                 connectionCache.set(currentPid, { 
-                    bytes_sent: bytesSent, 
-                    bytes_received: bytesRecv, 
-                    last_update: now,
+                    bytes_sent: currentBytesSent, 
+                    bytes_received: currentBytesRecv, 
+                    last_update: now, 
                     username 
                 });
             }
         }
     }
 
-    // Cleanup dead connections from cache
+    // Clean old cache
     for (const pid of connectionCache.keys()) {
         if (!activePids.has(pid)) {
             connectionCache.delete(pid);
         }
     }
 
-    // 3. Update Database & Enforce Limits
+    // 3. Update Database
     const stmt = db.prepare(`
         UPDATE users SET 
         dataUsedGB = dataUsedGB + ?, 
@@ -196,10 +190,6 @@ const monitorTraffic = async () => {
     db.serialize(() => {
         db.run("BEGIN TRANSACTION");
         
-        // Reset stats for all users first (to handle disconnected users showing speed)
-        // We set speed to 0, if they are active, the loop below will overwrite it.
-        // But we keep concurrentInUse until updated.
-        // Optimized: We fetch all users, if not in userUpdates, set speed 0.
         db.all("SELECT username, dataLimitGB, expiryDate, isActive, id FROM users", (err, rows) => {
             if(err) return;
             
@@ -212,52 +202,34 @@ const monitorTraffic = async () => {
                 let downSpeed = 0;
 
                 if (update) {
-                    // Convert bytes to GB
                     addGB = (update.upDelta + update.downDelta) / (1024 * 1024 * 1024);
                     activeCount = update.activeConns.length;
                     upSpeed = update.totalUpSpeed;
                     downSpeed = update.totalDownSpeed;
                 }
 
-                // Update Stats
                 stmt.run(addGB, activeCount, upSpeed, downSpeed, user.username);
 
-                // --- Enforcement Logic ---
+                // Enforcement (Limit & Expiry)
                 const checkEnforcement = async () => {
                      let shouldLock = false;
                      
-                     // 1. Check Data Limit (if not 0/unlimited)
-                     // Note: We need accurate current usage. We just added `addGB`. 
-                     // Since we are in a transaction, we can't easily read back the *new* value immediately 
-                     // inside this JS loop without complexity. 
-                     // We approximate check using JS state or trigger a lock in next cycle.
-                     // Better: check against the `row` data + `addGB`.
-                     
-                     // We need the updated total.
                      db.get("SELECT dataUsedGB FROM users WHERE id = ?", [user.id], async (err, rowStats) => {
                         if (!rowStats) return;
                         const totalUsed = rowStats.dataUsedGB + addGB;
                         
-                        if (user.dataLimitGB > 0 && totalUsed >= user.dataLimitGB) {
-                            shouldLock = true;
-                            console.log(`User ${user.username} exceeded data limit. Locking.`);
-                        }
+                        // Data Limit
+                        if (user.dataLimitGB > 0 && totalUsed >= user.dataLimitGB) shouldLock = true;
 
-                        // 2. Check Expiry
+                        // Expiry
                         if (user.expiryDate) {
-                            const expiry = new Date(user.expiryDate);
-                            if (new Date() > expiry) {
-                                shouldLock = true;
-                                console.log(`User ${user.username} expired. Locking.`);
-                            }
+                            if (new Date() > new Date(user.expiryDate)) shouldLock = true;
                         }
 
                         if (shouldLock && user.isActive) {
-                            // Lock System User
+                            console.log(`Locking user: ${user.username}`);
                             await runSystemCommand(`usermod -L "${user.username}"`);
-                            // Kill active connections
                             await runSystemCommand(`pkill -u "${user.username}"`);
-                            // Update DB status
                             db.run("UPDATE users SET isActive = 0 WHERE id = ?", [user.id]);
                         }
                      });
@@ -271,11 +243,10 @@ const monitorTraffic = async () => {
     stmt.finalize();
 };
 
-// Start Monitoring Loop (Every 2 seconds)
 setInterval(monitorTraffic, 2000);
 
-
 // --- API Routes ---
+// ... (Rest of the file remains similar, just ensuring new Settings routes work implicitly via database structure)
 
 // 1. Settings
 app.get('/api/settings', (req, res) => {
@@ -305,28 +276,21 @@ app.post('/api/settings', (req, res) => {
     stmt.finalize();
 });
 
-// 2. Users
+// 2. Users (Same as before)
 app.get('/api/users', (req, res) => {
     db.all("SELECT * FROM users", (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
         
-        // Enhance user objects with cached connection info if available
-        // Note: activeConnections is not stored in DB, we generate it from live monitoring or return empty
-        // For simplicity in this implementation, we return basic DB stats. 
-        // Real active connections would require a separate in-memory store or table.
-        // Let's simply reconstruct active connection array from cache for the specific user.
-        
         const users = rows.map(u => {
-            // Find active connections in cache for this user
             const activeConns = [];
             for (const [pid, info] of connectionCache.entries()) {
                 if (info.username === u.username) {
                      activeConns.push({
                         id: pid,
-                        ip: 'Active', // We don't persist IP in cache details perfectly in this snippet, but 'ss' logic has it.
+                        ip: 'Active', 
                         country: '-',
                         device: 'SSH',
-                        currentDownloadSpeed: 0, // Simplified for list view
+                        currentDownloadSpeed: 0, 
                         currentUploadSpeed: 0
                      });
                 }
@@ -344,20 +308,12 @@ app.get('/api/users', (req, res) => {
 
 app.post('/api/users', async (req, res) => {
     const u = req.body;
-    
-    // Create System User (Nologin)
-    // -M: No home directory
-    // -s /sbin/nologin: No shell access
-    // -e: Expiry date
     const datePart = u.expiryDate.split('T')[0];
     const userAddCmd = `useradd -M -s /sbin/nologin -e "${datePart}" "${u.username}"`;
-    
-    // Improved password setting
     const setPassCmd = `echo '${u.username}:${u.password}' | chpasswd`;
 
-    // Execute system commands first
-    const cmd1 = await runSystemCommand(userAddCmd);
-    const cmd2 = await runSystemCommand(setPassCmd);
+    await runSystemCommand(userAddCmd);
+    await runSystemCommand(setPassCmd);
 
     const stmt = db.prepare(`
         INSERT INTO users (id, username, password, isActive, expiryDate, dataLimitGB, dataUsedGB, concurrentLimit, concurrentInUse, createdAt, notes, speedLimitUpload, speedLimitDownload, speedLimitTotal)
@@ -379,18 +335,15 @@ app.put('/api/users/:id', async (req, res) => {
     const u = req.body;
     const id = req.params.id;
 
-    // Get current username to execute commands
     db.get("SELECT username FROM users WHERE id = ?", [id], async (err, row) => {
         if (err || !row) return res.status(500).json({ error: "User not found" });
         
         const username = row.username;
         const datePart = u.expiryDate.split('T')[0];
         
-        // Update System User
         await runSystemCommand(`usermod -s /sbin/nologin -e "${datePart}" "${username}"`);
         await runSystemCommand(`echo '${username}:${u.password}' | chpasswd`);
         
-        // Lock/Unlock based on isActive
         if (u.isActive) {
             await runSystemCommand(`usermod -U "${username}"`);
         } else {
@@ -421,7 +374,6 @@ app.delete('/api/users/:id', (req, res) => {
     
     db.get("SELECT username FROM users WHERE id = ?", [id], async (err, row) => {
         if (row) {
-             // Delete System User
              await runSystemCommand(`userdel -f "${row.username}"`);
              await runSystemCommand(`pkill -u "${row.username}"`);
 
@@ -435,7 +387,6 @@ app.delete('/api/users/:id', (req, res) => {
     });
 });
 
-// 3. Stats
 app.get('/api/stats', (req, res) => {
     const cpus = os.cpus();
     const totalMem = os.totalmem();
@@ -447,30 +398,26 @@ app.get('/api/stats', (req, res) => {
     const days = Math.floor(uptimeSeconds / (3600*24));
     const hours = Math.floor(uptimeSeconds % (3600*24) / 3600);
 
-    // Calculate total network traffic from DB sum
     db.get("SELECT SUM(dataUsedGB) as total FROM users", (err, row) => {
         const totalTraffic = row ? row.total : 0;
         
         res.json({
             cpu: cpuUsage,
             ram: (usedMem / totalMem) * 100,
-            disk: 45, // Static for now, usually requires 'df' command
+            disk: 45, 
             uptime: `${days}d, ${hours}h`,
-            totalTrafficUp: 0, // Hard to separate global up/down without interface monitoring
-            totalTrafficDown: totalTraffic * 1024 // Convert GB to MB for display consistency if needed
+            totalTrafficUp: 0, 
+            totalTrafficDown: totalTraffic * 1024 
         });
     });
 });
 
-// --- Serve Frontend ---
 app.use(express.static(join(__dirname, '../dist')));
-
-// Fallback for SPA routing
 app.get('*', (req, res) => {
     const indexFile = join(__dirname, '../dist/index.html');
     res.sendFile(indexFile, (err) => {
         if (err) {
-            res.status(500).send("Server Error: Could not find frontend build. Please run 'npm run build'.");
+            res.status(500).send("Server Error.");
         }
     });
 });

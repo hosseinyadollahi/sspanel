@@ -73,7 +73,9 @@ export const UserDetail: React.FC = () => {
 
   if (!user) return <div>User not found</div>;
 
-  const sshLink = `ssh://${user.username}:${user.password}@${settings.serverIp}:22`;
+  // Added remark to the link
+  const remark = settings.connectionRemark ? `#${encodeURIComponent(settings.connectionRemark)}` : '#SSH-Panel';
+  const sshLink = `ssh://${user.username}:${user.password}@${settings.serverIp}:22${remark}`;
 
   const handleSave = () => {
     if (user && editForm) {

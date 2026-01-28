@@ -63,4 +63,5 @@ export interface AppSettings {
   adminPass: string;
   is2FAEnabled: boolean;
   secret2FA: string;
+  connectionRemark: string; // New field for connection label
 }

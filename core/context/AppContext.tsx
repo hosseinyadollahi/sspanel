@@ -25,6 +25,7 @@ const INITIAL_SETTINGS: AppSettings = {
   adminPass: '',
   is2FAEnabled: false,
   secret2FA: '',
+  connectionRemark: 'SSH-Panel', // Default remark
 };
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {

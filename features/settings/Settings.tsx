@@ -1,6 +1,7 @@
+
 import React, { useState } from 'react';
 import { useApp } from '../../core/context/AppContext';
-import { Shield, Server, Globe, Save, RefreshCw, Copy, X, ShieldCheck, CheckCircle } from 'lucide-react';
+import { Shield, Server, Globe, Save, RefreshCw, Copy, X, ShieldCheck, CheckCircle, Tag } from 'lucide-react';
 
 export const Settings: React.FC = () => {
   const { settings, updateSettings } = useApp();
@@ -201,6 +202,11 @@ export const Settings: React.FC = () => {
                  <label className="text-sm text-slate-400">Server IP (SSH Host)</label>
                  <input type="text" value={form.serverIp} onChange={e => setForm({...form, serverIp: e.target.value})} className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white focus:border-cyan-500 focus:outline-none" />
                  <p className="text-xs text-slate-500">This IP will be used in user configuration files.</p>
+              </div>
+               <div className="space-y-2">
+                 <label className="text-sm text-slate-400 flex items-center gap-2"><Tag className="w-4 h-4" /> Connection Remark</label>
+                 <input type="text" value={form.connectionRemark} onChange={e => setForm({...form, connectionRemark: e.target.value})} className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white focus:border-cyan-500 focus:outline-none" />
+                 <p className="text-xs text-slate-500">The label displayed in client apps (e.g., #BrandName).</p>
               </div>
            </div>
         </div>
