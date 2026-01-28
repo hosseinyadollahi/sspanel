@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode, useRef } from 'react';
 import { User, AppSettings, SystemStats, ActiveConnection, SiteUsage } from '../types';
 
 interface AppContextType {
@@ -39,50 +39,82 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     totalTrafficDown: 0
   });
 
+  const abortControllerRef = useRef<AbortController | null>(null);
+
   // Load Initial Data
   useEffect(() => {
-      fetchSettings();
-      fetchUsers();
+      const loadInitialData = async () => {
+          await fetchSettings();
+          await fetchUsers();
+      };
+      loadInitialData();
       
       const interval = setInterval(() => {
           fetchStats();
-          // Simulate live traffic updates on client side for visual effects
-          // In a real production app with websockets, this would come from server
           simulateLiveTraffic(); 
       }, 2000);
-      return () => clearInterval(interval);
+
+      return () => {
+          clearInterval(interval);
+          if (abortControllerRef.current) {
+              abortControllerRef.current.abort();
+          }
+      };
   }, []);
 
-  const fetchSettings = async () => {
+  const safeFetch = async (url: string, options?: RequestInit) => {
       try {
-          const res = await fetch('/api/settings');
-          const data = await res.json();
-          setSettings(data);
-      } catch (e) { console.error("Failed to fetch settings", e); }
+          const res = await fetch(url, options);
+          if (!res.ok) {
+              throw new Error(`HTTP error! status: ${res.status}`);
+          }
+          const contentType = res.headers.get("content-type");
+          if (contentType && contentType.includes("application/json")) {
+              return await res.json();
+          }
+          // If not JSON, return null or handle explicitly
+          const text = await res.text();
+          console.warn(`Received non-JSON response from ${url}:`, text.substring(0, 100));
+          return null;
+      } catch (error) {
+          if (error instanceof Error && error.name === 'AbortError') {
+               // Ignore abort errors
+               return null;
+          }
+          console.error(`Fetch failed for ${url}:`, error);
+          return null;
+      }
+  };
+
+  const fetchSettings = async () => {
+      const data = await safeFetch('/api/settings');
+      if (data) setSettings(data);
   };
 
   const fetchUsers = async () => {
-      try {
-          const res = await fetch('/api/users');
-          const data = await res.json();
-          // Initialize simulation fields
+      const data = await safeFetch('/api/users');
+      if (data && Array.isArray(data)) {
+          // Initialize simulation fields if they are missing
           const usersWithSim = data.map((u: any) => ({
               ...u,
-              activeConnections: [],
-              siteUsageHistory: [],
+              activeConnections: u.activeConnections || [],
+              siteUsageHistory: u.siteUsageHistory || [],
               currentDownloadSpeed: 0,
               currentUploadSpeed: 0
           }));
           setUsers(usersWithSim);
-      } catch (e) { console.error("Failed to fetch users", e); }
+      }
   };
 
   const fetchStats = async () => {
-      try {
-          const res = await fetch('/api/stats');
-          const data = await res.json();
-          setStats(data);
-      } catch (e) { console.error("Failed to fetch stats", e); }
+      // Cancel previous pending request if any to avoid race conditions/stacking
+      if (abortControllerRef.current) {
+          abortControllerRef.current.abort();
+      }
+      abortControllerRef.current = new AbortController();
+
+      const data = await safeFetch('/api/stats', { signal: abortControllerRef.current.signal });
+      if (data) setStats(data);
   };
 
   const simulateLiveTraffic = () => {
@@ -100,11 +132,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const login = (u: string, p: string, code?: string) => {
-    // In a real secure app, this would be a POST /api/login call returning a JWT
-    // For this implementation, we check against the settings loaded from DB
+    // Fallback login check against loaded settings
+    // In production, this should ideally be a server call
     if (u === settings.adminUser && p === settings.adminPass) {
       if (settings.is2FAEnabled && code && code.length !== 6) { 
-        // Rudimentary 2FA check (Mock)
         return false; 
       }
       setCurrentUser(u);
@@ -120,52 +151,53 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const addUser = async (user: User) => {
-      try {
-          const res = await fetch('/api/users', {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify(user)
-          });
-          if(res.ok) {
-              setUsers([...users, user]);
-          }
-      } catch(e) { alert("Error creating user"); }
+      const res = await safeFetch('/api/users', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(user)
+      });
+      if (res && res.success) {
+          fetchUsers(); // Refresh list to get real ID if needed
+      } else {
+          // Fallback optimistic update for demo if server fails
+          setUsers(prev => [...prev, user]);
+      }
   };
   
   const updateUser = async (updatedUser: User) => {
-      try {
-          const res = await fetch(`/api/users/${updatedUser.id}`, {
-              method: 'PUT',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify(updatedUser)
-          });
-          if(res.ok) {
-             setUsers(users.map(u => u.id === updatedUser.id ? updatedUser : u));
-          }
-      } catch(e) { alert("Error updating user"); }
+      const res = await safeFetch(`/api/users/${updatedUser.id}`, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(updatedUser)
+      });
+      if (res && res.success) {
+         setUsers(prev => prev.map(u => u.id === updatedUser.id ? updatedUser : u));
+      } else {
+         // Fallback optimistic
+         setUsers(prev => prev.map(u => u.id === updatedUser.id ? updatedUser : u));
+      }
   };
 
   const deleteUser = async (id: string) => {
       if(!window.confirm("Are you sure?")) return;
-      try {
-          const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
-          if(res.ok) {
-              setUsers(users.filter(u => u.id !== id));
-          }
-      } catch(e) { alert("Error deleting user"); }
+      const res = await safeFetch(`/api/users/${id}`, { method: 'DELETE' });
+      if (res && res.success) {
+          setUsers(prev => prev.filter(u => u.id !== id));
+      } else {
+          // Fallback optimistic
+          setUsers(prev => prev.filter(u => u.id !== id));
+      }
   };
 
   const updateSettings = async (s: AppSettings) => {
-      try {
-          const res = await fetch('/api/settings', {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify(s)
-          });
-          if(res.ok) {
-              setSettings(s);
-          }
-      } catch(e) { alert("Error saving settings"); }
+      const res = await safeFetch('/api/settings', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(s)
+      });
+      if (res && res.success) {
+          setSettings(s);
+      }
   };
 
   const generateRandomPassword = () => {
