@@ -17,6 +17,12 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(bodyParser.json());
 
+// Enable WAL mode for better concurrency
+db.serialize(() => {
+    db.run("PRAGMA journal_mode = WAL;");
+    db.run("PRAGMA synchronous = NORMAL;");
+});
+
 // --- System Command Helper ---
 const runSystemCommand = (command) => {
     return new Promise((resolve) => {
@@ -26,6 +32,7 @@ const runSystemCommand = (command) => {
 
         exec(command, { maxBuffer: 1024 * 1024 * 5 }, (error, stdout, stderr) => {
             if (error) {
+                console.error(`Command failed: ${command}`, stderr);
                 resolve({ stdout: '', stderr, success: false });
             } else {
                 resolve({ stdout, success: true });
@@ -69,6 +76,7 @@ const resolveGeo = async (ip) => {
                     city: data.city
                 };
                 geoCache.set(cleanIp, geoData);
+                // console.log(`GeoIP Resolved: ${cleanIp} -> ${data.country}`);
                 return geoData;
             }
         }
@@ -117,8 +125,8 @@ const monitorTraffic = async () => {
             currentBytesRecv = 0;
 
             const pidMatch = line.match(/users:\(\(".*?",pid=(\d+)/); 
-            // Regex handles optional brackets for IPv6 and port
-            const ipMatch = line.match(/([0-9a-fA-F.:\[\]]+):[\w]+\s+([0-9a-fA-F.:\[\]]+)/);
+            // IMPROVED REGEX: Handles spaces better and various IPv6 formats
+            const ipMatch = line.match(/\s+([0-9a-fA-F.:\[\]]+):[\w]+\s+([0-9a-fA-F.:\[\]]+)/);
             
             if (pidMatch && ipMatch) {
                 currentPid = pidMatch[1];
@@ -158,8 +166,10 @@ const monitorTraffic = async () => {
                     };
                 }
 
+                // Resolve IP Info
                 const geo = await resolveGeo(currentIp);
 
+                // Update aggregate IP info (use the first connection's IP)
                 if (!userUpdates[username].lastIp) {
                     userUpdates[username].lastIp = currentIp.replace(/^\[+|\]+$/g, '');
                     userUpdates[username].lastCity = geo.city;
@@ -171,6 +181,7 @@ const monitorTraffic = async () => {
                     // New Session Detected
                     const cleanIp = currentIp.replace(/^\[+|\]+$/g, '');
                     const now = new Date().toISOString();
+                    console.log(`[Connect] User: ${username} IP: ${cleanIp}`);
                     
                     // Use a Promise wrapper for db.run to get lastID
                     await new Promise((resolve) => {
@@ -189,7 +200,6 @@ const monitorTraffic = async () => {
                     });
                 } else {
                     // Update running total for session (optional, usually we update on close)
-                    // But we can update bytes_sent/recv in cache
                 }
                 // -------------------------------
 
@@ -199,7 +209,7 @@ const monitorTraffic = async () => {
                     device: 'SSH Tunnel', 
                     country: geo.countryCode,
                     city: geo.city,
-                    connectedAt: new Date().toISOString(), // This is technically inaccurate as it resets on restart, but fine for live view
+                    connectedAt: new Date().toISOString(),
                     currentDownloadSpeed: 0,
                     currentUploadSpeed: 0,
                     sessionUsageMB: (currentBytesSent + currentBytesRecv) / 1024 / 1024
@@ -249,6 +259,11 @@ const monitorTraffic = async () => {
             const totalSent = finalCache ? Math.max(0, finalCache.bytes_sent - sessionInfo.startBytesSent) : 0;
             const totalRecv = finalCache ? Math.max(0, finalCache.bytes_received - sessionInfo.startBytesRecv) : 0;
             const disconnectedAt = new Date().toISOString();
+
+            // Check if finalCache exists (it should, but just in case)
+            if (finalCache) {
+                 console.log(`[Disconnect] User: ${finalCache.username} Total: ${totalSent+totalRecv} bytes`);
+            }
 
             db.run(`UPDATE connection_logs SET disconnected_at = ?, bytes_sent = ?, bytes_received = ? WHERE id = ?`, 
                 [disconnectedAt, totalSent, totalRecv, sessionInfo.logId]);
@@ -306,9 +321,12 @@ const monitorTraffic = async () => {
                     activeCount = update.activeConns.length;
                     upSpeed = update.totalUpSpeed;
                     downSpeed = update.totalDownSpeed;
-                    lastIp = update.lastIp || null;
-                    lastCountry = update.lastCountry || null;
-                    lastCity = update.lastCity || null;
+                    // Only update DB location if we have a valid one
+                    if (update.lastIp && update.lastCountry) {
+                        lastIp = update.lastIp;
+                        lastCountry = update.lastCountry;
+                        lastCity = update.lastCity;
+                    }
                 }
 
                 stmt.run(addGB, activeCount, upSpeed, downSpeed, lastIp, lastCountry, lastCity, user.username);

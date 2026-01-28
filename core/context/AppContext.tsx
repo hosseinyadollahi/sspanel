@@ -51,9 +51,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       };
       loadInitialData();
       
+      // Polling Interval (Every 3 seconds)
       const interval = setInterval(() => {
           fetchStats();
-      }, 2000);
+          fetchUsers(); // CRITICAL: This was missing, preventing real-time user updates
+      }, 3000);
 
       return () => {
           clearInterval(interval);
@@ -74,7 +76,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
               return await res.json();
           }
           const text = await res.text();
-          console.warn(`Received non-JSON response from ${url}:`, text.substring(0, 100));
+          // console.warn(`Received non-JSON response from ${url}:`, text.substring(0, 100));
           return null;
       } catch (error) {
           if (error instanceof Error && error.name === 'AbortError') {
@@ -97,9 +99,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
               ...u,
               activeConnections: u.activeConnections || [],
               siteUsageHistory: u.siteUsageHistory || [],
-              // Initialize with 0 for real display
-              currentDownloadSpeed: 0,
-              currentUploadSpeed: 0,
+              // Ensure we use the server-provided speeds, fallback to 0
+              currentDownloadSpeed: u.currentDownloadSpeed || 0,
+              currentUploadSpeed: u.currentUploadSpeed || 0,
               speedLimitTotal: u.speedLimitTotal || 0
           }));
           setUsers(usersWithSim);
@@ -153,9 +155,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           body: JSON.stringify(updatedUser)
       });
       if (res && res.success) {
+         // Optimistic update
          setUsers(prev => prev.map(u => u.id === updatedUser.id ? updatedUser : u));
-      } else {
-         setUsers(prev => prev.map(u => u.id === updatedUser.id ? updatedUser : u));
+         fetchUsers(); // Refresh to get server-side validations if any
       }
   };
 
@@ -163,8 +165,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if(!window.confirm("Are you sure?")) return;
       const res = await safeFetch(`/api/users/${id}`, { method: 'DELETE' });
       if (res && res.success) {
-          setUsers(prev => prev.filter(u => u.id !== id));
-      } else {
           setUsers(prev => prev.filter(u => u.id !== id));
       }
   };
