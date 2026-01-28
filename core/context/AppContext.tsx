@@ -1,3 +1,4 @@
+
 import React, { createContext, useContext, useState, useEffect, ReactNode, useRef } from 'react';
 import { User, AppSettings, SystemStats, ActiveConnection, SiteUsage } from '../types';
 
@@ -51,7 +52,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       
       const interval = setInterval(() => {
           fetchStats();
-          simulateLiveTraffic(); 
+          // simulateLiveTraffic(); // Removed to show real (zero/actual) speed
       }, 2000);
 
       return () => {
@@ -72,13 +73,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           if (contentType && contentType.includes("application/json")) {
               return await res.json();
           }
-          // If not JSON, return null or handle explicitly
           const text = await res.text();
           console.warn(`Received non-JSON response from ${url}:`, text.substring(0, 100));
           return null;
       } catch (error) {
           if (error instanceof Error && error.name === 'AbortError') {
-               // Ignore abort errors
                return null;
           }
           console.error(`Fetch failed for ${url}:`, error);
@@ -94,20 +93,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const fetchUsers = async () => {
       const data = await safeFetch('/api/users');
       if (data && Array.isArray(data)) {
-          // Initialize simulation fields if they are missing
           const usersWithSim = data.map((u: any) => ({
               ...u,
               activeConnections: u.activeConnections || [],
               siteUsageHistory: u.siteUsageHistory || [],
+              // Initialize with 0 for real display
               currentDownloadSpeed: 0,
-              currentUploadSpeed: 0
+              currentUploadSpeed: 0,
+              speedLimitTotal: u.speedLimitTotal || 0
           }));
           setUsers(usersWithSim);
       }
   };
 
   const fetchStats = async () => {
-      // Cancel previous pending request if any to avoid race conditions/stacking
       if (abortControllerRef.current) {
           abortControllerRef.current.abort();
       }
@@ -117,23 +116,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (data) setStats(data);
   };
 
-  const simulateLiveTraffic = () => {
-      setUsers(prev => prev.map(u => {
-          if (!u.isActive) return u;
-          // Only simulate if user is active
-          const dl = Math.random() > 0.5 ? parseFloat((Math.random() * 5).toFixed(2)) : 0;
-          const ul = Math.random() > 0.5 ? parseFloat((Math.random() * 1).toFixed(2)) : 0;
-          return {
-              ...u,
-              currentDownloadSpeed: dl,
-              currentUploadSpeed: ul
-          };
-      }));
-  };
-
   const login = (u: string, p: string, code?: string) => {
-    // Fallback login check against loaded settings
-    // In production, this should ideally be a server call
     if (u === settings.adminUser && p === settings.adminPass) {
       if (settings.is2FAEnabled && code && code.length !== 6) { 
         return false; 
@@ -157,9 +140,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           body: JSON.stringify(user)
       });
       if (res && res.success) {
-          fetchUsers(); // Refresh list to get real ID if needed
+          fetchUsers();
       } else {
-          // Fallback optimistic update for demo if server fails
           setUsers(prev => [...prev, user]);
       }
   };
@@ -173,7 +155,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (res && res.success) {
          setUsers(prev => prev.map(u => u.id === updatedUser.id ? updatedUser : u));
       } else {
-         // Fallback optimistic
          setUsers(prev => prev.map(u => u.id === updatedUser.id ? updatedUser : u));
       }
   };
@@ -184,7 +165,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (res && res.success) {
           setUsers(prev => prev.filter(u => u.id !== id));
       } else {
-          // Fallback optimistic
           setUsers(prev => prev.filter(u => u.id !== id));
       }
   };
@@ -201,7 +181,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const generateRandomPassword = () => {
-    const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%";
+    // Removed '@' from the character set as requested
+    const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%^&*";
     let pass = "";
     for (let i = 0; i < 12; i++) {
       pass += chars.charAt(Math.floor(Math.random() * chars.length));

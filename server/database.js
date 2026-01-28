@@ -1,3 +1,4 @@
+
 import sqlite3 from 'sqlite3';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -25,7 +26,7 @@ const db = new sqlite3.Database(dbPath, (err) => {
 
 function initDb() {
     db.serialize(() => {
-        // Users Table
+        // Users Table - Added speedLimitTotal
         db.run(`CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
             username TEXT UNIQUE,
@@ -39,8 +40,19 @@ function initDb() {
             createdAt TEXT,
             notes TEXT,
             speedLimitUpload INTEGER DEFAULT 0,
-            speedLimitDownload INTEGER DEFAULT 0
-        )`);
+            speedLimitDownload INTEGER DEFAULT 0,
+            speedLimitTotal INTEGER DEFAULT 0
+        )`, (err) => {
+            if (!err) {
+                // Migration: Check if column exists, if not add it (simple migration logic)
+                db.all("PRAGMA table_info(users)", (err, rows) => {
+                    const hasTotal = rows.some(r => r.name === 'speedLimitTotal');
+                    if (!hasTotal) {
+                        db.run("ALTER TABLE users ADD COLUMN speedLimitTotal INTEGER DEFAULT 0");
+                    }
+                });
+            }
+        });
 
         // Settings Table
         db.run(`CREATE TABLE IF NOT EXISTS settings (

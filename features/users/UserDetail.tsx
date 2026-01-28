@@ -1,3 +1,4 @@
+
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useApp } from '../../core/context/AppContext';
@@ -20,12 +21,19 @@ export const UserDetail: React.FC = () => {
   const [unlimitedData, setUnlimitedData] = useState(false);
   const [unlimitedExpiry, setUnlimitedExpiry] = useState(false);
   const [unlimitedSpeed, setUnlimitedSpeed] = useState(false);
+  const [useTotalSpeed, setUseTotalSpeed] = useState(true);
 
   useEffect(() => {
     if (user) {
       setEditForm(user);
       setUnlimitedData(user.dataLimitGB === 0);
-      setUnlimitedSpeed(user.speedLimitUpload === 0 && user.speedLimitDownload === 0);
+      
+      const hasTotal = user.speedLimitTotal && user.speedLimitTotal > 0;
+      const hasSep = user.speedLimitUpload > 0 || user.speedLimitDownload > 0;
+
+      setUnlimitedSpeed(!hasTotal && !hasSep);
+      setUseTotalSpeed(hasTotal || (!hasSep && !hasTotal));
+
       const year = new Date(user.expiryDate).getFullYear();
       setUnlimitedExpiry(year > 2090);
     }
@@ -56,10 +64,21 @@ export const UserDetail: React.FC = () => {
       const updatedUser = { ...user, ...editForm } as User;
       
       if (unlimitedData) updatedUser.dataLimitGB = 0;
+      
       if (unlimitedSpeed) {
           updatedUser.speedLimitUpload = 0;
           updatedUser.speedLimitDownload = 0;
+          updatedUser.speedLimitTotal = 0;
+      } else {
+          if (useTotalSpeed) {
+              updatedUser.speedLimitUpload = 0;
+              updatedUser.speedLimitDownload = 0;
+              // updatedUser.speedLimitTotal is set by input
+          } else {
+              updatedUser.speedLimitTotal = 0;
+          }
       }
+
       if (unlimitedExpiry) updatedUser.expiryDate = '2099-01-01T00:00:00.000Z';
       else if (!updatedUser.expiryDate.includes('T')) {
           updatedUser.expiryDate = new Date(updatedUser.expiryDate).toISOString();
@@ -189,9 +208,9 @@ export const UserDetail: React.FC = () => {
                  </div>
                  <div className="flex justify-between">
                      <div>
-                         <div className="text-xs text-slate-500">Speed (DL/UL)</div>
+                         <div className="text-xs text-slate-500">Speed Config</div>
                          <div className="text-lg font-bold text-white">
-                             {user.speedLimitDownload === 0 ? 'Unl' : user.speedLimitDownload} / {user.speedLimitUpload === 0 ? 'Unl' : user.speedLimitUpload}
+                             {(user.speedLimitTotal && user.speedLimitTotal > 0) ? `Total: ${user.speedLimitTotal}` : (user.speedLimitDownload === 0 && user.speedLimitUpload === 0) ? 'Unlimited' : `${user.speedLimitDownload}/${user.speedLimitUpload}`}
                          </div>
                      </div>
                      <div className="text-right">
@@ -224,94 +243,6 @@ export const UserDetail: React.FC = () => {
                 </div>
             </div>
 
-            {/* Active Connections List (With Individual Speed/Usage) */}
-            <div>
-               <h3 className="text-white font-bold mb-3 flex items-center gap-2">
-                 <Monitor className="w-5 h-5 text-indigo-400" />
-                 Active Sessions ({user.activeConnections.length})
-               </h3>
-               {user.activeConnections.length > 0 ? (
-                 <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden shadow-md">
-                   <table className="w-full text-left text-sm">
-                     <thead className="bg-slate-950 text-slate-400 border-b border-slate-800">
-                       <tr>
-                         <th className="p-3 font-medium">IP Address</th>
-                         <th className="p-3 font-medium">Device/Location</th>
-                         <th className="p-3 font-medium">Live Speed (DL/UL)</th>
-                         <th className="p-3 font-medium">Session Usage</th>
-                         <th className="p-3 font-medium">Connected At</th>
-                       </tr>
-                     </thead>
-                     <tbody className="divide-y divide-slate-800 text-slate-300">
-                       {user.activeConnections.map((conn) => (
-                         <tr key={conn.id} className="hover:bg-slate-800/50">
-                           <td className="p-3 font-mono text-cyan-400">{conn.ip}</td>
-                           <td className="p-3">
-                               <div className="text-indigo-300">{conn.device}</div>
-                               <div className="text-xs text-slate-500">{conn.country}</div>
-                           </td>
-                           <td className="p-3 font-mono text-xs">
-                               <div className="text-cyan-400">↓ {conn.currentDownloadSpeed} Mbps</div>
-                               <div className="text-indigo-400">↑ {conn.currentUploadSpeed} Mbps</div>
-                           </td>
-                           <td className="p-3 font-medium text-white">
-                               {formatSize(conn.sessionUsageMB)}
-                           </td>
-                           <td className="p-3 text-slate-500">{new Date(conn.connectedAt).toLocaleTimeString()}</td>
-                         </tr>
-                       ))}
-                     </tbody>
-                   </table>
-                 </div>
-               ) : (
-                 <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-800 text-center text-slate-500">
-                   No active connections currently.
-                 </div>
-               )}
-            </div>
-
-            {/* Site/Service Usage History (Persisted) */}
-            <div>
-               <h3 className="text-white font-bold mb-3 flex items-center gap-2">
-                 <Server className="w-5 h-5 text-amber-400" />
-                 Service Usage History
-               </h3>
-               {user.siteUsageHistory && user.siteUsageHistory.length > 0 ? (
-                 <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden shadow-md">
-                   <table className="w-full text-left text-sm">
-                     <thead className="bg-slate-950 text-slate-400 border-b border-slate-800">
-                       <tr>
-                         <th className="p-3 font-medium">Service / Domain</th>
-                         <th className="p-3 font-medium">Category</th>
-                         <th className="p-3 font-medium">Total Usage</th>
-                         <th className="p-3 font-medium">Last Access</th>
-                       </tr>
-                     </thead>
-                     <tbody className="divide-y divide-slate-800 text-slate-300">
-                       {user.siteUsageHistory.sort((a,b) => b.totalUsageMB - a.totalUsageMB).map((site, idx) => (
-                         <tr key={idx} className="hover:bg-slate-800/50">
-                           <td className="p-3 font-medium text-slate-200">{site.domain}</td>
-                           <td className="p-3">
-                               <span className="bg-slate-800 border border-slate-700 px-2 py-0.5 rounded text-xs text-slate-400">
-                                   {site.category}
-                               </span>
-                           </td>
-                           <td className="p-3 font-mono text-cyan-400">
-                               {formatSize(site.totalUsageMB)}
-                           </td>
-                           <td className="p-3 text-slate-500">{new Date(site.lastAccess).toLocaleString()}</td>
-                         </tr>
-                       ))}
-                     </tbody>
-                   </table>
-                 </div>
-               ) : (
-                 <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-800 text-center text-slate-500">
-                   No traffic history available yet.
-                 </div>
-               )}
-            </div>
-
           </div>
         )}
 
@@ -337,20 +268,48 @@ export const UserDetail: React.FC = () => {
                     </div>
                     <input type="number" disabled={unlimitedData} value={unlimitedData ? '' : editForm.dataLimitGB} onChange={e => setEditForm({...editForm, dataLimitGB: Number(e.target.value)})} className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white disabled:opacity-50" />
                  </div>
-                 <div className="space-y-2">
+
+                 {/* Speed Limits Config */}
+                 <div className="col-span-1 md:col-span-2 space-y-2">
                     <div className="flex justify-between items-center">
-                        <label className="text-sm text-slate-400">Download Speed (Mbps)</label>
+                        <label className="text-sm text-slate-400">Speed Limits (Mbps)</label>
                         <UnlimitedCheckbox label="Unlimited" checked={unlimitedSpeed} onChange={setUnlimitedSpeed} />
                     </div>
-                    <input type="number" disabled={unlimitedSpeed} value={unlimitedSpeed ? '' : editForm.speedLimitDownload} onChange={e => setEditForm({...editForm, speedLimitDownload: Number(e.target.value)})} className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white disabled:opacity-50" />
-                 </div>
-                 <div className="space-y-2">
-                    <div className="flex justify-between items-center">
-                         <label className="text-sm text-slate-400">Upload Speed (Mbps)</label>
-                         <UnlimitedCheckbox label="Unlimited" checked={unlimitedSpeed} onChange={setUnlimitedSpeed} />
+                    
+                    {!unlimitedSpeed && (
+                      <div className="flex gap-4 mb-2">
+                        <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-400">
+                          <input type="radio" checked={useTotalSpeed} onChange={() => setUseTotalSpeed(true)} className="accent-indigo-500"/>
+                          Total Limit
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-400">
+                          <input type="radio" checked={!useTotalSpeed} onChange={() => setUseTotalSpeed(false)} className="accent-indigo-500"/>
+                          Separate (Up/Down)
+                        </label>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-4">
+                        {useTotalSpeed ? (
+                            <div className="col-span-2">
+                                <input 
+                                  type="number" 
+                                  disabled={unlimitedSpeed}
+                                  placeholder="Total Speed Limit (Mbps)"
+                                  value={unlimitedSpeed ? '' : editForm.speedLimitTotal} 
+                                  onChange={e => setEditForm({...editForm, speedLimitTotal: Number(e.target.value)})} 
+                                  className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white disabled:opacity-50" 
+                                />
+                            </div>
+                        ) : (
+                          <>
+                             <input type="number" disabled={unlimitedSpeed} placeholder="Download (Mbps)" value={unlimitedSpeed ? '' : editForm.speedLimitDownload} onChange={e => setEditForm({...editForm, speedLimitDownload: Number(e.target.value)})} className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white disabled:opacity-50" />
+                             <input type="number" disabled={unlimitedSpeed} placeholder="Upload (Mbps)" value={unlimitedSpeed ? '' : editForm.speedLimitUpload} onChange={e => setEditForm({...editForm, speedLimitUpload: Number(e.target.value)})} className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white disabled:opacity-50" />
+                          </>
+                        )}
                     </div>
-                    <input type="number" disabled={unlimitedSpeed} value={unlimitedSpeed ? '' : editForm.speedLimitUpload} onChange={e => setEditForm({...editForm, speedLimitUpload: Number(e.target.value)})} className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white disabled:opacity-50" />
                  </div>
+
                  <div className="space-y-2">
                     <label className="text-sm text-slate-400">Concurrent Limit</label>
                     <input type="number" value={editForm.concurrentLimit} onChange={e => setEditForm({...editForm, concurrentLimit: Number(e.target.value)})} className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white" />

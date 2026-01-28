@@ -1,3 +1,4 @@
+
 import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
@@ -74,7 +75,8 @@ app.get('/api/users', (req, res) => {
         const users = rows.map(u => ({
             ...u,
             isActive: !!u.isActive,
-            currentUploadSpeed: 0,
+            // Real speed (requires server agent, 0 for now)
+            currentUploadSpeed: 0, 
             currentDownloadSpeed: 0,
             activeConnections: [],
             siteUsageHistory: []
@@ -92,21 +94,24 @@ app.post('/api/users', async (req, res) => {
     // -e: Expiry date
     const datePart = u.expiryDate.split('T')[0];
     const userAddCmd = `useradd -M -s /sbin/nologin -e "${datePart}" "${u.username}"`;
-    const setPassCmd = `echo "${u.username}:${u.password}" | chpasswd`;
+    
+    // Improved password setting with quotes to handle special chars
+    // Using single quotes for password inside the echo string is safer in bash
+    const setPassCmd = `echo '${u.username}:${u.password}' | chpasswd`;
 
     // Execute system commands first
     await runSystemCommand(userAddCmd);
     await runSystemCommand(setPassCmd);
 
     const stmt = db.prepare(`
-        INSERT INTO users (id, username, password, isActive, expiryDate, dataLimitGB, dataUsedGB, concurrentLimit, concurrentInUse, createdAt, notes, speedLimitUpload, speedLimitDownload)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO users (id, username, password, isActive, expiryDate, dataLimitGB, dataUsedGB, concurrentLimit, concurrentInUse, createdAt, notes, speedLimitUpload, speedLimitDownload, speedLimitTotal)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     stmt.run(
         u.id, u.username, u.password, u.isActive ? 1 : 0, u.expiryDate, 
         u.dataLimitGB, 0, u.concurrentLimit, 0, u.createdAt, u.notes,
-        u.speedLimitUpload || 0, u.speedLimitDownload || 0,
+        u.speedLimitUpload || 0, u.speedLimitDownload || 0, u.speedLimitTotal || 0,
         function(err) {
             if (err) return res.status(500).json({ error: err.message });
             res.json({ success: true, id: u.id });
@@ -128,8 +133,10 @@ app.put('/api/users/:id', async (req, res) => {
         // Update System User
         // Update Expiry & Shell
         await runSystemCommand(`usermod -s /sbin/nologin -e "${datePart}" "${username}"`);
-        // Update Password
-        await runSystemCommand(`echo "${username}:${u.password}" | chpasswd`);
+        
+        // Update Password - Robust Method
+        // We use single quotes around the "user:pass" string to prevent shell expansion issues
+        await runSystemCommand(`echo '${username}:${u.password}' | chpasswd`);
         
         // Lock/Unlock based on isActive
         if (u.isActive) {
@@ -141,13 +148,13 @@ app.put('/api/users/:id', async (req, res) => {
         const stmt = db.prepare(`
             UPDATE users SET 
             password = ?, isActive = ?, expiryDate = ?, dataLimitGB = ?, 
-            concurrentLimit = ?, notes = ?, speedLimitUpload = ?, speedLimitDownload = ?
+            concurrentLimit = ?, notes = ?, speedLimitUpload = ?, speedLimitDownload = ?, speedLimitTotal = ?
             WHERE id = ?
         `);
         
         stmt.run(
             u.password, u.isActive ? 1 : 0, u.expiryDate, u.dataLimitGB,
-            u.concurrentLimit, u.notes, u.speedLimitUpload, u.speedLimitDownload, id,
+            u.concurrentLimit, u.notes, u.speedLimitUpload, u.speedLimitDownload, u.speedLimitTotal || 0, id,
             function(err) {
                 if (err) return res.status(500).json({ error: err.message });
                 res.json({ success: true });

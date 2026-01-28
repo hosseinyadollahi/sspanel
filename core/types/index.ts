@@ -1,3 +1,4 @@
+
 export interface ActiveConnection {
   id: string;
   ip: string;
@@ -34,6 +35,7 @@ export interface User {
   // Speed Limits (0 = Unlimited)
   speedLimitUpload: number; 
   speedLimitDownload: number;
+  speedLimitTotal: number; // New: Total combined speed limit
   activeConnections: ActiveConnection[];
   siteUsageHistory: SiteUsage[]; // Persistent history of visited sites
 }

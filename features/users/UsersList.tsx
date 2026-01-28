@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../core/context/AppContext';
 import { Link } from 'react-router-dom';
@@ -14,6 +15,9 @@ export const UsersList: React.FC = () => {
   const [unlimitedData, setUnlimitedData] = useState(false);
   const [unlimitedExpiry, setUnlimitedExpiry] = useState(false);
   const [unlimitedSpeed, setUnlimitedSpeed] = useState(true);
+  
+  // New: Toggle between Separate Limits vs Total Limit
+  const [useTotalSpeedLimit, setUseTotalSpeedLimit] = useState(true);
 
   // States for toggles in Quick Edit
   const [qeUnlimitedData, setQeUnlimitedData] = useState(false);
@@ -29,6 +33,7 @@ export const UsersList: React.FC = () => {
     concurrentLimit: 2,
     speedLimitUpload: 0,
     speedLimitDownload: 0,
+    speedLimitTotal: 0,
     isActive: true,
     notes: '',
   });
@@ -37,7 +42,10 @@ export const UsersList: React.FC = () => {
   useEffect(() => {
       if (quickEditUser) {
           setQeUnlimitedData(quickEditUser.dataLimitGB === 0);
-          setQeUnlimitedSpeed(quickEditUser.speedLimitUpload === 0 && quickEditUser.speedLimitDownload === 0);
+          const hasSeparate = quickEditUser.speedLimitUpload > 0 || quickEditUser.speedLimitDownload > 0;
+          const hasTotal = quickEditUser.speedLimitTotal && quickEditUser.speedLimitTotal > 0;
+          setQeUnlimitedSpeed(!hasSeparate && !hasTotal);
+          
           // Check if year is > 2090 for unlimited expiry
           const expiryYear = new Date(quickEditUser.expiryDate).getFullYear();
           setQeUnlimitedExpiry(expiryYear > 2090);
@@ -59,12 +67,14 @@ export const UsersList: React.FC = () => {
        concurrentLimit: 2,
        speedLimitUpload: 0,
        speedLimitDownload: 0,
+       speedLimitTotal: 0,
        isActive: true,
        notes: '',
     });
     setUnlimitedData(false);
     setUnlimitedExpiry(false);
     setUnlimitedSpeed(true);
+    setUseTotalSpeedLimit(true);
     setIsModalOpen(true);
   };
 
@@ -73,19 +83,31 @@ export const UsersList: React.FC = () => {
     
     // Handle Unlimited Logic
     const finalDataLimit = unlimitedData ? 0 : newUser.dataLimitGB;
-    const finalUploadLimit = unlimitedSpeed ? 0 : newUser.speedLimitUpload;
-    const finalDownloadLimit = unlimitedSpeed ? 0 : newUser.speedLimitDownload;
     const finalExpiryDate = unlimitedExpiry 
         ? '2099-01-01T00:00:00.000Z' 
         : new Date(newUser.expiryDate!).toISOString();
+
+    let finalUp = 0;
+    let finalDown = 0;
+    let finalTotal = 0;
+
+    if (!unlimitedSpeed) {
+        if (useTotalSpeedLimit) {
+            finalTotal = newUser.speedLimitTotal || 0;
+        } else {
+            finalUp = newUser.speedLimitUpload || 0;
+            finalDown = newUser.speedLimitDownload || 0;
+        }
+    }
 
     const created: User = {
       ...newUser as User,
       id: Math.random().toString(36).substr(2, 9),
       createdAt: new Date().toISOString(),
       dataLimitGB: finalDataLimit,
-      speedLimitUpload: finalUploadLimit,
-      speedLimitDownload: finalDownloadLimit,
+      speedLimitUpload: finalUp,
+      speedLimitDownload: finalDown,
+      speedLimitTotal: finalTotal,
       expiryDate: finalExpiryDate,
       dataUsedGB: 0,
       concurrentInUse: 0,
@@ -106,10 +128,10 @@ export const UsersList: React.FC = () => {
           if (qeUnlimitedSpeed) {
               updatedUser.speedLimitUpload = 0;
               updatedUser.speedLimitDownload = 0;
+              updatedUser.speedLimitTotal = 0;
           }
           if (qeUnlimitedExpiry) updatedUser.expiryDate = '2099-01-01T00:00:00.000Z';
           else {
-             // Ensure it's ISO format
              if(!updatedUser.expiryDate.includes('T')) {
                  updatedUser.expiryDate = new Date(updatedUser.expiryDate).toISOString();
              }
@@ -124,7 +146,6 @@ export const UsersList: React.FC = () => {
     setNewUser({...newUser, password: generateRandomPassword()});
   };
 
-  // Helper to get flag emoji from country code
   const getFlagEmoji = (countryCode: string) => {
     if (!countryCode) return '🏳️';
     const codePoints = countryCode
@@ -134,7 +155,6 @@ export const UsersList: React.FC = () => {
     return String.fromCodePoint(...codePoints);
   }
 
-  // Helper component for Unlimited Checkbox
   const UnlimitedCheckbox = ({ label, checked, onChange }: { label: string, checked: boolean, onChange: (v: boolean) => void }) => (
      <label className="flex items-center gap-2 cursor-pointer select-none">
         <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${checked ? 'bg-indigo-600 border-indigo-600' : 'border-slate-500'}`}>
@@ -178,7 +198,7 @@ export const UsersList: React.FC = () => {
                 <th className="px-6 py-4 font-medium">Username</th>
                 <th className="px-6 py-4 font-medium">Status</th>
                 <th className="px-6 py-4 font-medium">Live Speed</th>
-                <th className="px-6 py-4 font-medium">Limits (Up/Down)</th>
+                <th className="px-6 py-4 font-medium">Speed Limit</th>
                 <th className="px-6 py-4 font-medium">Traffic</th>
                 <th className="px-6 py-4 font-medium">Expiry</th>
                 <th className="px-6 py-4 font-medium">Conns</th>
@@ -206,10 +226,18 @@ export const UsersList: React.FC = () => {
                     </div>
                   </td>
                   <td className="px-6 py-4">
-                    <div className="flex flex-col gap-1 text-xs text-slate-400">
-                        <span>↓ {user.speedLimitDownload === 0 ? '∞' : user.speedLimitDownload + ' Mb'}</span>
-                        <span>↑ {user.speedLimitUpload === 0 ? '∞' : user.speedLimitUpload + ' Mb'}</span>
-                    </div>
+                    {user.speedLimitTotal && user.speedLimitTotal > 0 ? (
+                         <span className="inline-flex items-center gap-1 bg-amber-500/10 text-amber-400 px-2 py-1 rounded text-xs border border-amber-500/30">
+                             <Gauge className="w-3 h-3" /> Total: {user.speedLimitTotal} Mbps
+                         </span>
+                    ) : (user.speedLimitDownload > 0 || user.speedLimitUpload > 0) ? (
+                        <div className="flex flex-col gap-1 text-xs text-slate-400">
+                            <span>↓ {user.speedLimitDownload === 0 ? '∞' : user.speedLimitDownload + ' Mb'}</span>
+                            <span>↑ {user.speedLimitUpload === 0 ? '∞' : user.speedLimitUpload + ' Mb'}</span>
+                        </div>
+                    ) : (
+                        <span className="text-xs text-slate-600">Unlimited</span>
+                    )}
                   </td>
                   <td className="px-6 py-4">
                     <div className="flex flex-col gap-1">
@@ -344,23 +372,50 @@ export const UsersList: React.FC = () => {
                         <label className="text-sm text-slate-400">Speed Limits (Mbps)</label>
                         <UnlimitedCheckbox label="Unlimited" checked={unlimitedSpeed} onChange={setUnlimitedSpeed} />
                     </div>
+                    
+                    {!unlimitedSpeed && (
+                      <div className="flex gap-4 mb-2">
+                        <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-400">
+                          <input type="radio" checked={useTotalSpeedLimit} onChange={() => setUseTotalSpeedLimit(true)} className="accent-indigo-500"/>
+                          Total Limit
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-400">
+                          <input type="radio" checked={!useTotalSpeedLimit} onChange={() => setUseTotalSpeedLimit(false)} className="accent-indigo-500"/>
+                          Separate (Up/Down)
+                        </label>
+                      </div>
+                    )}
+
                     <div className="flex gap-2">
-                         <input 
-                            type="number" 
-                            disabled={unlimitedSpeed}
-                            placeholder="Download"
-                            value={unlimitedSpeed ? '' : newUser.speedLimitDownload} 
-                            onChange={e => setNewUser({...newUser, speedLimitDownload: Number(e.target.value)})} 
-                            className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white disabled:opacity-50" 
-                        />
-                        <input 
-                            type="number" 
-                            disabled={unlimitedSpeed}
-                            placeholder="Upload"
-                            value={unlimitedSpeed ? '' : newUser.speedLimitUpload} 
-                            onChange={e => setNewUser({...newUser, speedLimitUpload: Number(e.target.value)})} 
-                            className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white disabled:opacity-50" 
-                        />
+                        {useTotalSpeedLimit ? (
+                            <input 
+                              type="number" 
+                              disabled={unlimitedSpeed}
+                              placeholder="Total Speed Limit (Mbps)"
+                              value={unlimitedSpeed ? '' : newUser.speedLimitTotal} 
+                              onChange={e => setNewUser({...newUser, speedLimitTotal: Number(e.target.value)})} 
+                              className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white disabled:opacity-50" 
+                            />
+                        ) : (
+                          <>
+                            <input 
+                                type="number" 
+                                disabled={unlimitedSpeed}
+                                placeholder="DL"
+                                value={unlimitedSpeed ? '' : newUser.speedLimitDownload} 
+                                onChange={e => setNewUser({...newUser, speedLimitDownload: Number(e.target.value)})} 
+                                className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white disabled:opacity-50" 
+                            />
+                            <input 
+                                type="number" 
+                                disabled={unlimitedSpeed}
+                                placeholder="UL"
+                                value={unlimitedSpeed ? '' : newUser.speedLimitUpload} 
+                                onChange={e => setNewUser({...newUser, speedLimitUpload: Number(e.target.value)})} 
+                                className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white disabled:opacity-50" 
+                            />
+                          </>
+                        )}
                     </div>
                 </div>
               </div>
@@ -430,10 +485,15 @@ export const UsersList: React.FC = () => {
                         <label className="text-sm text-slate-400">Speed Limit (Mbps)</label>
                         <UnlimitedCheckbox label="Unlimited Speed" checked={qeUnlimitedSpeed} onChange={setQeUnlimitedSpeed} />
                     </div>
-                    <div className="grid grid-cols-2 gap-4">
-                        <input type="number" placeholder="DL" disabled={qeUnlimitedSpeed} value={qeUnlimitedSpeed ? '' : quickEditUser.speedLimitDownload} onChange={e => setQuickEditUser({...quickEditUser, speedLimitDownload: Number(e.target.value)})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white disabled:opacity-50" />
-                        <input type="number" placeholder="UL" disabled={qeUnlimitedSpeed} value={qeUnlimitedSpeed ? '' : quickEditUser.speedLimitUpload} onChange={e => setQuickEditUser({...quickEditUser, speedLimitUpload: Number(e.target.value)})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white disabled:opacity-50" />
-                    </div>
+                    {/* Simplified Quick Edit: Only showing Total Limit if used, or separate if used */}
+                    {(quickEditUser.speedLimitTotal || 0) > 0 ? (
+                         <input type="number" placeholder="Total" disabled={qeUnlimitedSpeed} value={qeUnlimitedSpeed ? '' : quickEditUser.speedLimitTotal} onChange={e => setQuickEditUser({...quickEditUser, speedLimitTotal: Number(e.target.value)})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white disabled:opacity-50" />
+                    ) : (
+                        <div className="grid grid-cols-2 gap-4">
+                            <input type="number" placeholder="DL" disabled={qeUnlimitedSpeed} value={qeUnlimitedSpeed ? '' : quickEditUser.speedLimitDownload} onChange={e => setQuickEditUser({...quickEditUser, speedLimitDownload: Number(e.target.value)})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white disabled:opacity-50" />
+                            <input type="number" placeholder="UL" disabled={qeUnlimitedSpeed} value={qeUnlimitedSpeed ? '' : quickEditUser.speedLimitUpload} onChange={e => setQuickEditUser({...quickEditUser, speedLimitUpload: Number(e.target.value)})} className="w-full bg-slate-800 border border-slate-700 rounded-xl p-3 text-white disabled:opacity-50" />
+                        </div>
+                    )}
                 </div>
 
                 <div className="space-y-2 pt-2">
