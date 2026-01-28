@@ -3,6 +3,7 @@ export interface ActiveConnection {
   id: string;
   ip: string;
   country: string; // e.g., 'US', 'DE', 'IR'
+  city: string;    // New: City name
   device: string;  // e.g., 'Windows 10', 'Android', 'iPhone'
   connectedAt: string;
   currentDownloadSpeed: number; // Mbps

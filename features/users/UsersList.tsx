@@ -267,7 +267,7 @@ export const UsersList: React.FC = () => {
                            <span className="flex items-center gap-1">
                              <Globe className="w-3 h-3 text-slate-500" />
                              {user.activeConnections[0].ip} 
-                             <span title={user.activeConnections[0].country}>{getFlagEmoji(user.activeConnections[0].country)}</span>
+                             <span title={`${user.activeConnections[0].city}, ${user.activeConnections[0].country}`}>{getFlagEmoji(user.activeConnections[0].country)}</span>
                            </span>
                            <span className="flex items-center gap-1 text-slate-500">
                              <Monitor className="w-3 h-3" />

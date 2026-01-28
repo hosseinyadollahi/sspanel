@@ -36,6 +36,45 @@ const runSystemCommand = (command) => {
     });
 };
 
+// --- GeoIP Service ---
+const geoCache = new Map();
+const resolveGeo = async (ip) => {
+    // Clean IP (remove IPv6 mapping)
+    const cleanIp = ip.replace('::ffff:', '');
+    
+    // Private IPs
+    if (cleanIp === '127.0.0.1' || cleanIp.startsWith('192.168.') || cleanIp.startsWith('10.')) {
+        return { country: 'Local', countryCode: 'LO', city: 'Server' };
+    }
+
+    if (geoCache.has(cleanIp)) {
+        return geoCache.get(cleanIp);
+    }
+
+    // Default pending state to prevent spamming API
+    geoCache.set(cleanIp, { country: 'Unknown', countryCode: '', city: '-' });
+
+    try {
+        // Using ip-api.com (Free, no key required for low volume)
+        const res = await fetch(`http://ip-api.com/json/${cleanIp}?fields=status,country,countryCode,city`);
+        const data = await res.json();
+        
+        if (data.status === 'success') {
+            const geoData = {
+                country: data.country,
+                countryCode: data.countryCode,
+                city: data.city
+            };
+            geoCache.set(cleanIp, geoData);
+            return geoData;
+        }
+    } catch (e) {
+        console.error("GeoIP Fetch Error:", e.message);
+    }
+    
+    return { country: 'Unknown', countryCode: '', city: '-' };
+};
+
 // --- Monitoring Service ---
 const connectionCache = new Map(); 
 let liveUserStats = {}; // Global state for API access
@@ -44,14 +83,13 @@ const monitorTraffic = async () => {
     if (os.platform() !== 'linux') return;
 
     // 1. Get detailed socket stats for SSH (port 22)
-    // -t: tcp, -n: numeric, -i: internal info (bytes), -p: process, -o: timer
     const { stdout, success } = await runSystemCommand(`ss -tnipo 'sport = :22'`);
     
     if (!success) return;
 
     const lines = stdout.split('\n');
     const activePids = new Set();
-    const userUpdates = {}; // Map<username, { uploadDelta: 0, downloadDelta: 0, activeConns: [] }>
+    const userUpdates = {}; // Map<username, { ... }>
 
     let currentPid = null;
     let currentIp = null;
@@ -64,19 +102,17 @@ const monitorTraffic = async () => {
         
         // Line type 1: ESTAB and Process/IP info
         if (line.startsWith('ESTAB')) {
-             // Reset for new block
             currentPid = null;
             currentIp = null;
             currentBytesSent = 0;
             currentBytesRecv = 0;
 
-            const pidMatch = line.match(/users:\(\(".*?",pid=(\d+)/); // Capture any process name
-            // Robust IP matching for IPv4 mapped IPv6 or pure IPv4
+            const pidMatch = line.match(/users:\(\(".*?",pid=(\d+)/); 
             const ipMatch = line.match(/([0-9a-fA-F.:\[\]]+):[\w]+\s+([0-9a-fA-F.:\[\]]+)/);
             
             if (pidMatch && ipMatch) {
                 currentPid = pidMatch[1];
-                currentIp = ipMatch[2];
+                currentIp = ipMatch[2]; // Remote IP
                 activePids.add(currentPid);
             }
         }
@@ -91,17 +127,14 @@ const monitorTraffic = async () => {
 
             // Resolve User
             let username = null;
-            
             if (connectionCache.has(currentPid)) {
                 username = connectionCache.get(currentPid).username;
             } else {
-                // Determine user ownership
                 const { stdout: userOut } = await runSystemCommand(`ps -o user= -p ${currentPid}`);
                 username = userOut.trim();
             }
 
             if (username && username !== 'root' && username !== 'sshd') {
-                 // Initialize aggregate
                 if (!userUpdates[username]) {
                     userUpdates[username] = { 
                         upDelta: 0, 
@@ -112,19 +145,22 @@ const monitorTraffic = async () => {
                     };
                 }
 
-                // Add to active connections list for frontend
+                // Resolve Geo Info (Async but cached)
+                const geo = await resolveGeo(currentIp);
+
                 userUpdates[username].activeConns.push({
                     id: currentPid,
                     ip: currentIp,
                     device: 'SSH Tunnel', 
-                    country: 'Unknown',
+                    country: geo.countryCode,
+                    city: geo.city,
                     connectedAt: new Date().toISOString(),
                     currentDownloadSpeed: 0,
                     currentUploadSpeed: 0,
                     sessionUsageMB: (currentBytesSent + currentBytesRecv) / 1024 / 1024
                 });
 
-                // Calculate Usage Deltas
+                // Calculate Deltas
                 let prev = connectionCache.get(currentPid);
                 if (!prev) {
                     prev = { bytes_sent: currentBytesSent, bytes_received: currentBytesRecv, last_update: Date.now(), username };
@@ -168,10 +204,10 @@ const monitorTraffic = async () => {
         }
     }
 
-    // Update global live stats for API
+    // Update global state
     liveUserStats = userUpdates;
 
-    // 3. Update Database
+    // 3. Update Database & Enforce Limits
     const stmt = db.prepare(`
         UPDATE users SET 
         dataUsedGB = dataUsedGB + ?, 
@@ -179,14 +215,12 @@ const monitorTraffic = async () => {
         currentUploadSpeed = ?,
         currentDownloadSpeed = ?
         WHERE username = ?
-    `, (err) => {
-        if (err) console.error("DB Prepare Error:", err.message);
-    });
+    `);
 
     db.serialize(() => {
         db.run("BEGIN TRANSACTION");
         
-        db.all("SELECT username, dataLimitGB, expiryDate, isActive, id FROM users", (err, rows) => {
+        db.all("SELECT username, dataLimitGB, expiryDate, isActive, id, speedLimitTotal, speedLimitUpload, speedLimitDownload FROM users", (err, rows) => {
             if(err) {
                 console.error("DB Select Error:", err.message);
                 try { stmt.finalize(); } catch(e) {}
@@ -194,7 +228,7 @@ const monitorTraffic = async () => {
                 return;
             }
             
-            rows.forEach(user => {
+            rows.forEach(async (user) => {
                 const update = userUpdates[user.username];
                 
                 let addGB = 0;
@@ -207,40 +241,52 @@ const monitorTraffic = async () => {
                     activeCount = update.activeConns.length;
                     upSpeed = update.totalUpSpeed;
                     downSpeed = update.totalDownSpeed;
+
+                    // --- SPEED LIMIT ENFORCEMENT ---
+                    // Since Node.js cannot easily throttle bandwidth (requires tc/iptables),
+                    // we ENFORCE limits by terminating connections that exceed the limit.
+                    const buffer = 1.2; // Allow 20% burst before killing
+                    let violation = false;
+
+                    if (user.speedLimitTotal > 0 && (upSpeed + downSpeed) > (user.speedLimitTotal * buffer)) {
+                        violation = true;
+                    } else if (user.speedLimitDownload > 0 && downSpeed > (user.speedLimitDownload * buffer)) {
+                        violation = true;
+                    } else if (user.speedLimitUpload > 0 && upSpeed > (user.speedLimitUpload * buffer)) {
+                        violation = true;
+                    }
+
+                    if (violation) {
+                        console.log(`User ${user.username} exceeded speed limit (${upSpeed.toFixed(2)}/${downSpeed.toFixed(2)}). Terminating connections.`);
+                        update.activeConns.forEach(async (conn) => {
+                            await runSystemCommand(`kill -9 ${conn.id}`);
+                        });
+                        // Reset stats since connection is dead
+                        activeCount = 0;
+                        upSpeed = 0; 
+                        downSpeed = 0;
+                    }
+                    // -------------------------------
                 }
 
-                // Run update safely
-                stmt.run(addGB, activeCount, upSpeed, downSpeed, user.username, (err) => {
-                    if (err) console.error("DB Update Error:", err.message);
-                });
+                // Run update
+                stmt.run(addGB, activeCount, upSpeed, downSpeed, user.username);
 
-                // Enforcement (Limit & Expiry)
-                const checkEnforcement = async () => {
-                     let shouldLock = false;
-                     
-                     db.get("SELECT dataUsedGB FROM users WHERE id = ?", [user.id], async (err, rowStats) => {
-                        if (err || !rowStats) return;
-                        
-                        // Use the updated value approximately (addGB is small delta)
-                        const totalUsed = rowStats.dataUsedGB + addGB;
-                        
-                        // Data Limit
-                        if (user.dataLimitGB > 0 && totalUsed >= user.dataLimitGB) shouldLock = true;
+                // Data & Expiry Enforcement
+                if (update) { // Only check if there was activity to save DB reads
+                    const totalUsed = user.dataUsedGB + addGB; // Use memory value for check
+                    let shouldLock = false;
 
-                        // Expiry
-                        if (user.expiryDate) {
-                            if (new Date() > new Date(user.expiryDate)) shouldLock = true;
-                        }
+                    if (user.dataLimitGB > 0 && totalUsed >= user.dataLimitGB) shouldLock = true;
+                    if (user.expiryDate && new Date() > new Date(user.expiryDate)) shouldLock = true;
 
-                        if (shouldLock && user.isActive) {
-                            console.log(`Locking user: ${user.username}`);
-                            await runSystemCommand(`usermod -L "${user.username}"`);
-                            await runSystemCommand(`pkill -u "${user.username}"`);
-                            db.run("UPDATE users SET isActive = 0 WHERE id = ?", [user.id]);
-                        }
-                     });
-                };
-                checkEnforcement();
+                    if (shouldLock && user.isActive) {
+                        console.log(`Locking user: ${user.username}`);
+                        await runSystemCommand(`usermod -L "${user.username}"`);
+                        await runSystemCommand(`pkill -u "${user.username}"`);
+                        db.run("UPDATE users SET isActive = 0 WHERE id = ?", [user.id]);
+                    }
+                }
             });
             
             stmt.finalize();
@@ -287,7 +333,6 @@ app.get('/api/users', (req, res) => {
         if (err) return res.status(500).json({ error: err.message });
         
         const users = rows.map(u => {
-            // Retrieve live stats from global state
             const stats = liveUserStats[u.username];
             const activeConns = stats ? stats.activeConns : [];
 
